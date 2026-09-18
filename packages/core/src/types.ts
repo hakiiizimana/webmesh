@@ -2,6 +2,9 @@ export type SearchItem = {
   title: string;
   url: string;
   description: string;
+  durationSeconds?: number | null;
+  channelUrl?: string | null;
+  viewCount?: number | null;
 };
 
 export type SearchResult = { success: true; data: SearchItem[] } | { success: false; error: string };

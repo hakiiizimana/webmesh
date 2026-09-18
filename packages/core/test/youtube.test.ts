@@ -14,6 +14,18 @@ test("parses legacy YouTube video renderers into the public result shape", () =>
             videoId: "demo",
             title: { simpleText: "Demo" },
             descriptionSnippet: { runs: [{ text: "A demo." }] },
+            lengthText: { simpleText: "2:05" },
+            viewCountText: { simpleText: "298,128 views" },
+            ownerText: {
+              runs: [
+                {
+                  text: "CodeHead",
+                  navigationEndpoint: {
+                    browseEndpoint: { browseId: "UCFVteOob_YXJHPaGTqlDV2Q" },
+                  },
+                },
+              ],
+            },
           },
         },
       ],
@@ -25,6 +37,9 @@ test("parses legacy YouTube video renderers into the public result shape", () =>
       title: "Demo",
       url: "https://www.youtube.com/watch?v=demo",
       description: "A demo.",
+      durationSeconds: 125,
+      channelUrl: "https://www.youtube.com/channel/UCFVteOob_YXJHPaGTqlDV2Q",
+      viewCount: 298128,
     },
   ]);
 });
@@ -77,6 +92,9 @@ test("parses current lockup video renderers", () => {
       title: "Lockup video",
       url: "https://www.youtube.com/watch?v=lockup-id",
       description: "",
+      durationSeconds: null,
+      channelUrl: null,
+      viewCount: null,
     },
   ]);
 });
@@ -101,6 +119,9 @@ test("parses Shorts shelf renderers", () => {
       title: "Short title",
       url: "https://www.youtube.com/watch?v=short-id",
       description: "",
+      durationSeconds: null,
+      channelUrl: null,
+      viewCount: null,
     },
   ]);
 });

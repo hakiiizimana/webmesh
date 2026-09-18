@@ -110,6 +110,57 @@ const descriptionFrom = (...renderers: Array<YoutubeJsonObject | null>): string 
     .filter((description, index, descriptions) => descriptions.indexOf(description) === index)
     .join("\n");
 
+const DURATION_PATTERN = /^\d{1,3}(?::\d{2}){1,2}$/u;
+const CHANNEL_ID_PATTERN = /^UC[A-Za-z0-9_-]{4,}$/u;
+const COUNT_MULTIPLIERS = {
+  b: 1_000_000_000,
+  k: 1_000,
+  m: 1_000_000,
+  md: 1_000_000_000,
+  mil: 1_000,
+  mio: 1_000_000,
+  mrd: 1_000_000_000,
+  tsd: 1_000,
+} as const;
+type CountSuffix = keyof typeof COUNT_MULTIPLIERS;
+
+const isCountSuffix = (value: string | undefined): value is CountSuffix =>
+  value !== undefined && value in COUNT_MULTIPLIERS;
+
+const amountFromText = (value: string, hasSuffix: boolean): number => {
+  const compact = value.replace(/[\s\u00a0\u202f]/gu, "");
+  const groups = compact.split(/[.,]/u);
+  const grouped = groups.length > 1 && groups.slice(1).every((group) => group.length === 3);
+  if (grouped) return Number(groups.join(""));
+  if (groups.length === 1) return Number(compact);
+
+  const separator = Math.max(compact.lastIndexOf("."), compact.lastIndexOf(","));
+  const fraction = compact.slice(separator + 1);
+  if (hasSuffix && fraction.length > 2) return Number(compact.replace(/[.,]/gu, ""));
+  const whole = compact.slice(0, separator).replace(/[.,]/gu, "");
+  return Number(`${whole}.${fraction}`);
+};
+
+const viewCountFromText = (value: string | undefined): number | null => {
+  if (value === undefined) return null;
+  if (/^no\s+(views?|subscribers?|videos?)$/iu.test(value.trim())) return 0;
+  const match = /([0-9][0-9.,\s\u00a0\u202f]*)(?:\s*(mrd|mio|mil|md|tsd|b|k|m)\.?)?/iu.exec(value);
+  if (match === null) return null;
+  const amount = amountFromText(match[1] ?? "", match[2] !== undefined);
+  if (!Number.isFinite(amount) || amount < 0) return null;
+  const suffix = match[2]?.toLowerCase();
+  const scaled = Math.round(amount * (isCountSuffix(suffix) ? COUNT_MULTIPLIERS[suffix] : 1));
+  return Number.isSafeInteger(scaled) ? scaled : null;
+};
+
+const secondsFromText = (value: string | undefined): number | null => {
+  if (value === undefined || !DURATION_PATTERN.test(value)) return null;
+  const parts = value.split(":").map(Number);
+  if (parts.slice(1).some((part) => part > 59)) return null;
+  const seconds = parts.reduce((total, part) => total * 60 + part, 0);
+  return Number.isSafeInteger(seconds) ? seconds : null;
+};
+
 const VIDEO_LOCKUP_TYPES = new Set([
   "LOCKUP_CONTENT_TYPE_VIDEO",
   "LOCKUP_CONTENT_TYPE_SHORT",
@@ -117,6 +168,72 @@ const VIDEO_LOCKUP_TYPES = new Set([
 ]);
 
 const youtubeVideoUrl = (id: string): string => `https://www.youtube.com/watch?v=${encodeURIComponent(id)}`;
+
+const youtubeChannelUrl = (id: string): string => `https://www.youtube.com/channel/${encodeURIComponent(id)}`;
+
+const channelUrlFrom = (value: YoutubeJsonValue | undefined): string | null => {
+  const id = findString(value, "browseId");
+  if (id !== undefined && CHANNEL_ID_PATTERN.test(id)) return youtubeChannelUrl(id);
+  const canonical = findString(value, "canonicalBaseUrl");
+  if (canonical?.startsWith("/@") === true) return `https://www.youtube.com${canonical}`;
+  return null;
+};
+
+type MetadataPart = { text: string; node: YoutubeJsonObject };
+
+const metadataPartsFrom = (lockup: YoutubeJsonObject | null): MetadataPart[] => {
+  const metadata = objectAt(objectAt(lockup, "metadata"), "lockupMetadataViewModel");
+  const rows = objectAt(objectAt(metadata, "metadata"), "contentMetadataViewModel")?.metadataRows;
+  if (!Array.isArray(rows)) return [];
+  return rows.flatMap((row) => {
+    if (!isObject(row) || !Array.isArray(row.metadataParts)) return [];
+    return row.metadataParts.flatMap((part) => {
+      if (!isObject(part)) return [];
+      const text = textAt(part, "text");
+      return text === undefined ? [] : [{ node: part, text }];
+    });
+  });
+};
+
+const badgeTextsFrom = (value: YoutubeJsonValue | undefined): string[] => {
+  const texts: string[] = [];
+  const visit = (current: YoutubeJsonValue | undefined): void => {
+    if (Array.isArray(current)) {
+      current.forEach(visit);
+      return;
+    }
+    if (!isObject(current)) return;
+    const badge = textAt(objectAt(current, "thumbnailBadgeViewModel"), "text");
+    if (badge !== undefined) texts.push(badge);
+    Object.values(current).forEach(visit);
+  };
+  visit(value);
+  return texts;
+};
+
+const videoMetadataFrom = (
+  legacy: YoutubeJsonObject | null,
+  lockup: YoutubeJsonObject | null,
+): Pick<SearchItem, "durationSeconds" | "channelUrl" | "viewCount"> => {
+  const metadataParts = metadataPartsFrom(lockup);
+  const viewText = textFromFirst(
+    textAt(legacy, "viewCountText"),
+    textAt(legacy, "shortViewCountText"),
+    metadataParts.find((part) => /\b(views?|watching)\b/iu.test(part.text))?.text,
+  );
+  const durationText = textFromFirst(
+    textAt(legacy, "lengthText"),
+    ...badgeTextsFrom(objectAt(lockup, "contentImage")).filter((text) => DURATION_PATTERN.test(text)),
+  );
+  const owner = objectAt(legacy, "ownerText") ?? objectAt(legacy, "shortBylineText");
+  const ownerPart = metadataParts.find((part) => findString(part.node, "browseId") !== undefined);
+
+  return {
+    durationSeconds: secondsFromText(durationText),
+    channelUrl: channelUrlFrom(owner ?? ownerPart?.node),
+    viewCount: viewCountFromText(viewText),
+  };
+};
 
 const videoFromShort = (renderer: YoutubeJsonObject): SearchItem | null => {
   const entityId = trimmedStringAt(renderer, "entityId");
@@ -132,6 +249,9 @@ const videoFromShort = (renderer: YoutubeJsonObject): SearchItem | null => {
     title,
     url: youtubeVideoUrl(id),
     description: descriptionFrom(renderer),
+    durationSeconds: null,
+    channelUrl: channelUrlFrom(renderer),
+    viewCount: viewCountFromText(textAt(overlay, "secondaryText")),
   };
 };
 
@@ -158,6 +278,7 @@ const videoFromItem = (item: YoutubeJsonObject): SearchItem | null => {
     title,
     url: youtubeVideoUrl(id),
     description: descriptionFrom(legacy, lockup),
+    ...videoMetadataFrom(legacy, lockup),
   };
 };
 

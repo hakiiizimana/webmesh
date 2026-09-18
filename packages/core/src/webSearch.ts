@@ -126,6 +126,7 @@ function httpCooldown(err: HttpError): number {
 function tidy(item: SearchItem): SearchItem {
   const description = item.description.replace(/\s+/g, " ").trim();
   return {
+    ...item,
     title: item.title.replace(/\s+/g, " ").trim(),
     url: item.url,
     description,
