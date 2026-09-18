@@ -27,7 +27,7 @@ describe("round robin", () => {
 
     const urls: string[] = [];
     for (let i = 0; i < 4; i++) {
-      const result = await search("q");
+      const result = await search(`q-${i}`);
       if (result.success) urls.push(result.data[0]?.url ?? "");
     }
     expect(urls).toEqual(["https://a.com", "https://b.com", "https://c.com", "https://a.com"]);
@@ -41,12 +41,47 @@ describe("round robin", () => {
     };
     const { search } = createSearch(registry, { store: memoryStore(), env: {}, now: () => clock });
 
-    expect(await search("q")).toEqual({ success: true, data: [item("https://b.com")] });
-    await search("q");
+    expect(await search("q-1")).toEqual({ success: true, data: [item("https://b.com")] });
+    await search("q-2");
     expect(registry.a.calls).toHaveLength(1);
 
     clock = 5_001;
-    await search("q");
+    await search("q-3");
+    expect(registry.a.calls).toHaveLength(2);
+  });
+
+  test("uses the agreed TTL for each freshness window", async () => {
+    const cases: Array<{ filters: SearchFilters; ttl: number }> = [
+      { filters: {}, ttl: 20 * 60_000 },
+      { filters: { freshness: "day" }, ttl: 20 * 60_000 },
+      { filters: { freshness: "week" }, ttl: 60 * 60_000 },
+      { filters: { freshness: "month" }, ttl: 24 * 60 * 60_000 },
+      { filters: { freshness: "year" }, ttl: 24 * 60 * 60_000 },
+    ];
+
+    for (const [index, testCase] of cases.entries()) {
+      let clock = 0;
+      const registry = { a: fake([item(`https://${index}.com`)]) };
+      const { search } = createSearch(registry, { store: memoryStore(), env: {}, now: () => clock });
+
+      await search(`q-${index}`, { filters: testCase.filters });
+      clock = testCase.ttl - 1;
+      await search(`q-${index}`, { filters: testCase.filters });
+      expect(registry.a.calls).toHaveLength(1);
+
+      clock = testCase.ttl;
+      await search(`q-${index}`, { filters: testCase.filters });
+      expect(registry.a.calls).toHaveLength(2);
+    }
+  });
+
+  test("keeps separate cache entries for different filters", async () => {
+    const registry = { a: fake([item("https://a.com")]) };
+    const { search } = createSearch(registry, { store: memoryStore(), env: {} });
+
+    await search("q", { filters: { type: "web" } });
+    await search("q", { filters: { type: "news" } });
+
     expect(registry.a.calls).toHaveLength(2);
   });
 

@@ -108,7 +108,7 @@ type Mcp = {
 
 type Get = {
   method: "GET";
-  url: (query: string, limit: number, filters: SearchFilters) => string;
+  url: (query: string, limit: number, filters: SearchFilters, key?: string) => string;
   parser: ParserId;
   headers?: (key: string) => Record<string, string>;
   supports?: FilterSupport;
@@ -273,6 +273,33 @@ function braveUrl(query: string, limit: number, filters: SearchFilters): string 
   return `https://api.search.brave.com/res/v1/${endpoint}/search?${params}`;
 }
 
+function youtubeSupports(filters: SearchFilters): boolean {
+  return (
+    onlyFilters("freshness", "type", "country", "language", "safeSearch")(filters) &&
+    (filters.type === undefined || filters.type === "web") &&
+    (filters.country === undefined || /^[a-z]{2}$/i.test(filters.country))
+  );
+}
+
+function youtubeUrl(query: string, limit: number, filters: SearchFilters, key = ""): string {
+  const params = new URLSearchParams({
+    part: "snippet",
+    q: query,
+    type: "video",
+    maxResults: String(Math.min(limit, 50)),
+    key,
+  });
+  const range = dateRange(filters.freshness);
+  if (range) {
+    params.set("publishedAfter", dateStart(range.from));
+    if (range.to) params.set("publishedBefore", dateEnd(range.to));
+  }
+  if (filters.country) params.set("regionCode", filters.country.toUpperCase());
+  if (filters.language) params.set("relevanceLanguage", filters.language);
+  if (filters.safeSearch) params.set("safeSearch", filters.safeSearch === "off" ? "none" : filters.safeSearch);
+  return `https://www.googleapis.com/youtube/v3/search?${params}`;
+}
+
 /** Key order = rotation order. `env` means the provider joins only when that var is set. */
 export const providers = {
   "parallel-mcp": {
@@ -389,6 +416,14 @@ export const providers = {
     parser: "brave",
     headers: (key) => ({ "x-subscription-token": key }),
     supports: braveSupports,
+  },
+  youtube: {
+    kind: "api",
+    env: "YOUTUBE_API_KEY",
+    method: "GET",
+    url: youtubeUrl,
+    parser: "youtube",
+    supports: youtubeSupports,
   },
   firecrawl: {
     kind: "api",

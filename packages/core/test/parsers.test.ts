@@ -67,6 +67,28 @@ test("parses Brave news results", async () => {
   expect(items).toEqual([{ title: "Rust news", url: "https://news.example.com/rust", description: "A Rust update" }]);
 });
 
+test("parses YouTube video results", async () => {
+  const items = await parse(
+    "youtube",
+    QUERY,
+    JSON.stringify({
+      items: [
+        {
+          id: { kind: "youtube#video", videoId: "abc123" },
+          snippet: { title: "Rust ownership", description: "A Rust ownership tutorial" },
+        },
+      ],
+    }),
+  );
+  expect(items).toEqual([
+    {
+      title: "Rust ownership",
+      url: "https://www.youtube.com/watch?v=abc123",
+      description: "A Rust ownership tutorial",
+    },
+  ]);
+});
+
 test("exa mcp parses --- blocks and treats Title N/A as the url", async () => {
   const items = await parse(
     "exa-mcp",

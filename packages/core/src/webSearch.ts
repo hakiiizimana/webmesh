@@ -8,6 +8,10 @@ import type { Provider, SearchContext, SearchItem, SearchResult } from "./types"
 
 const BLOCKED_MS = 10 * 60_000;
 const TRANSIENT_MS = 30_000;
+const CACHE_DEFAULT_TTL_MS = 20 * 60_000;
+const CACHE_WEEK_TTL_MS = 60 * 60_000;
+const CACHE_LONG_TTL_MS = 24 * 60 * 60_000;
+const CACHE_MAX_ENTRIES = 128;
 
 const toolResponse = z.object({
   result: z
@@ -54,7 +58,7 @@ async function invoke(spec: ProviderSpec, query: string, ctx: SearchContext): Pr
           body: JSON.stringify(spec.body(query, limit, filters)),
           signal,
         })
-      : await request(spec.url(query, limit, filters), { headers: { accept: "application/json", ...headers }, signal });
+      : await request(spec.url(query, limit, filters, key), { headers: { accept: "application/json", ...headers }, signal });
   return parse(spec.parser, query, await res.text());
 }
 
@@ -81,6 +85,7 @@ export const providers = {
   tavily: bind(specs.tavily),
   keenable: bind(specs.keenable),
   brave: bind(specs.brave),
+  youtube: bind(specs.youtube),
   firecrawl: bind(specs.firecrawl),
 } satisfies { [K in ProviderId]: Provider };
 
@@ -107,6 +112,60 @@ function tidy(item: SearchItem): SearchItem {
   };
 }
 
+type SuccessfulSearch = Extract<SearchResult, { success: true }>;
+type CacheEntry = { result: SuccessfulSearch; expiresAt: number };
+
+function cacheTtl(filters: SearchContext["filters"]): number {
+  const freshness = filters.freshness;
+  switch (freshness) {
+    case "week":
+      return CACHE_WEEK_TTL_MS;
+    case "month":
+    case "year":
+      return CACHE_LONG_TTL_MS;
+    case "day":
+      return CACHE_DEFAULT_TTL_MS;
+    default:
+      return freshness?.to ? CACHE_LONG_TTL_MS : CACHE_DEFAULT_TTL_MS;
+  }
+}
+
+function cacheKey(query: string, limit: number, providerIds: readonly string[], filters: SearchContext["filters"]): string {
+  const freshness = (() => {
+    switch (filters.freshness) {
+      case "day":
+      case "week":
+      case "month":
+      case "year":
+        return filters.freshness;
+      default:
+        return filters.freshness ? { from: filters.freshness.from, to: filters.freshness.to } : undefined;
+    }
+  })();
+
+  return JSON.stringify({
+    version: 1,
+    query: query.trim().replace(/\s+/g, " "),
+    limit,
+    providers: providerIds,
+    filters: {
+      freshness,
+      includeDomains: filters.includeDomains?.length ? [...filters.includeDomains].sort() : undefined,
+      excludeDomains: filters.excludeDomains?.length ? [...filters.excludeDomains].sort() : undefined,
+      type: filters.type,
+      country: filters.country,
+      language: filters.language,
+      safeSearch: filters.safeSearch,
+      exactMatch: filters.exactMatch === true ? true : undefined,
+      searchDepth: filters.searchDepth,
+    },
+  });
+}
+
+function copyResult(result: SuccessfulSearch): SuccessfulSearch {
+  return { success: true, data: result.data.map((item) => ({ ...item })) };
+}
+
 export function createSearch<R extends Record<string, Provider>>(registry: R, options: SearchOptions) {
   type Id = keyof R & string;
   const ids = Object.keys(registry).filter((id): id is Id => Object.hasOwn(registry, id));
@@ -117,6 +176,29 @@ export function createSearch<R extends Record<string, Provider>>(registry: R, op
     const provider = registry[id];
     if (!provider) throw new Error(`unknown provider ${String(id)}`);
     return provider;
+  };
+  const cache = new Map<string, CacheEntry>();
+
+  const readCache = (key: string): SuccessfulSearch | undefined => {
+    const entry = cache.get(key);
+    if (!entry) return undefined;
+    if (entry.expiresAt <= now()) {
+      cache.delete(key);
+      return undefined;
+    }
+    cache.delete(key);
+    cache.set(key, entry);
+    return copyResult(entry.result);
+  };
+
+  const writeCache = (key: string, result: SuccessfulSearch, filters: SearchContext["filters"]): void => {
+    cache.delete(key);
+    cache.set(key, { result: copyResult(result), expiresAt: now() + cacheTtl(filters) });
+    while (cache.size > CACHE_MAX_ENTRIES) {
+      const oldest = cache.keys().next().value;
+      if (oldest === undefined) break;
+      cache.delete(oldest);
+    }
   };
 
   const keyFor = (id: Id) => {
@@ -138,6 +220,10 @@ export function createSearch<R extends Record<string, Provider>>(registry: R, op
       };
     }
 
+    const key = cacheKey(query, limit, ready, filters);
+    const cached = readCache(key);
+    if (cached) return cached;
+
     const state = options.store.load();
     const start = (ready.findIndex((id) => id === state.last) + 1) % ready.length;
     const failures: string[] = [];
@@ -158,7 +244,9 @@ export function createSearch<R extends Record<string, Provider>>(registry: R, op
         if (items.length > 0) {
           state.last = id;
           options.store.save(state);
-          return { success: true, data: items };
+          const result: SuccessfulSearch = { success: true, data: items };
+          writeCache(key, result, filters);
+          return result;
         }
         failures.push(`${id}: no results`);
       } catch (err) {
