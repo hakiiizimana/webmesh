@@ -29,6 +29,30 @@ test("parses legacy YouTube video renderers into the public result shape", () =>
   ]);
 });
 
+test("parses YouTube description snippets from detailed metadata", () => {
+  const items = parseYoutubeSearchResponse(
+    JSON.stringify({
+      contents: [
+        {
+          videoRenderer: {
+            videoId: "described",
+            title: { runs: [{ text: "Described video" }] },
+            detailedMetadataSnippets: [
+              {
+                snippetText: {
+                  runs: [{ text: "The " }, { text: "full description snippet." }],
+                },
+              },
+            ],
+          },
+        },
+      ],
+    }),
+  );
+
+  expect(items[0]?.description).toBe("The full description snippet.");
+});
+
 test("parses current lockup video renderers", () => {
   const items = parseYoutubeSearchResponse(
     JSON.stringify({

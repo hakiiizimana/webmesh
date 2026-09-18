@@ -28,6 +28,11 @@ const trimmedStringAt = (value: YoutubeJsonObject | null, key: string): string |
   return isString(child) && child.trim() !== "" ? child.trim() : null;
 };
 
+const stringAt = (value: YoutubeJsonObject | null, key: string): string | null => {
+  const child = value?.[key];
+  return isString(child) ? child : null;
+};
+
 const jsonObjectFrom = (body: string): YoutubeJsonObject | null => {
   let parsed: YoutubeJsonValue;
   try {
@@ -47,7 +52,7 @@ const textFrom = (value: YoutubeJsonValue | undefined): string | undefined => {
   if (!Array.isArray(value.runs)) return undefined;
   const text = value.runs
     .filter(isObject)
-    .map((run) => trimmedStringAt(run, "text") ?? trimmedStringAt(run, "content") ?? "")
+    .map((run) => stringAt(run, "text") ?? stringAt(run, "content") ?? "")
     .join("")
     .trim();
   return text || undefined;
@@ -78,6 +83,33 @@ const findString = (value: YoutubeJsonValue | undefined, key: string): string | 
 const textFromFirst = (...values: Array<string | undefined>): string | undefined =>
   values.find((value) => value !== undefined && value.length > 0);
 
+const detailedDescriptionAt = (value: YoutubeJsonObject | null): string | undefined => {
+  const snippets = value?.detailedMetadataSnippets;
+  if (!Array.isArray(snippets)) return undefined;
+  const text = snippets
+    .filter(isObject)
+    .map((snippet) => textFrom(snippet.snippetText))
+    .filter((description): description is string => description !== undefined)
+    .join("\n")
+    .trim();
+  return text || undefined;
+};
+
+const descriptionFrom = (...renderers: Array<YoutubeJsonObject | null>): string =>
+  renderers
+    .flatMap((renderer) =>
+      renderer === null
+        ? []
+        : [
+            textAt(renderer, "descriptionSnippet"),
+            textAt(renderer, "description"),
+            detailedDescriptionAt(renderer),
+          ],
+    )
+    .filter((description): description is string => description !== undefined)
+    .filter((description, index, descriptions) => descriptions.indexOf(description) === index)
+    .join("\n");
+
 const VIDEO_LOCKUP_TYPES = new Set([
   "LOCKUP_CONTENT_TYPE_VIDEO",
   "LOCKUP_CONTENT_TYPE_SHORT",
@@ -99,7 +131,7 @@ const videoFromShort = (renderer: YoutubeJsonObject): SearchItem | null => {
   return {
     title,
     url: youtubeVideoUrl(id),
-    description: textFromFirst(textAt(renderer, "descriptionSnippet"), textAt(renderer, "description")) ?? "",
+    description: descriptionFrom(renderer),
   };
 };
 
@@ -125,13 +157,7 @@ const videoFromItem = (item: YoutubeJsonObject): SearchItem | null => {
   return {
     title,
     url: youtubeVideoUrl(id),
-    description:
-      textFromFirst(
-        textAt(legacy, "descriptionSnippet"),
-        textAt(legacy, "description"),
-        textAt(lockup, "descriptionSnippet"),
-        textAt(lockup, "description"),
-      ) ?? "",
+    description: descriptionFrom(legacy, lockup),
   };
 };
 
