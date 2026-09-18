@@ -6,7 +6,6 @@ import { parse } from "./parser";
 import type { StateStore } from "./state";
 import type { Provider, SearchContext, SearchItem, SearchResult } from "./types";
 
-const DESCRIPTION_MAX = 500;
 const BLOCKED_MS = 10 * 60_000;
 const TRANSIENT_MS = 30_000;
 
@@ -39,23 +38,23 @@ async function callMcp(url: string, name: string, args: Json, signal: AbortSigna
 }
 
 async function invoke(spec: ProviderSpec, query: string, ctx: SearchContext): Promise<SearchItem[]> {
-  const { limit, signal, key } = ctx;
-  if (spec.kind === "mcp") return parse(spec.parser, query, await callMcp(spec.url, spec.tool, spec.args(query, limit), signal));
+  const { limit, signal, key, filters } = ctx;
+  if (spec.kind === "mcp") return parse(spec.parser, query, await callMcp(spec.url, spec.tool, spec.args(query, limit, filters), signal));
   if (spec.kind === "scrape") {
-    const res = await request(spec.url(query), { signal, browser: true, headers: spec.headers });
+    const res = await request(spec.url(query, filters), { signal, browser: true, headers: spec.headers });
     if (res.status === 202) throw new HttpError(202, undefined, "HTTP 202: DuckDuckGo bot check");
     return parse(spec.parser, query, await res.text());
   }
   const headers = spec.headers?.(key) ?? {};
   const res =
     spec.method === "POST"
-      ? await request(spec.url(query, limit), {
+      ? await request(spec.url(query, limit, filters), {
           method: "POST",
           headers: { "content-type": "application/json", accept: "application/json", ...headers },
-          body: JSON.stringify(spec.body(query, limit)),
+          body: JSON.stringify(spec.body(query, limit, filters)),
           signal,
         })
-      : await request(spec.url(query, limit), { headers: { accept: "application/json", ...headers }, signal });
+      : await request(spec.url(query, limit, filters), { headers: { accept: "application/json", ...headers }, signal });
   return parse(spec.parser, query, await res.text());
 }
 
@@ -63,6 +62,7 @@ function bind(spec: ProviderSpec): Provider {
   return {
     kind: spec.kind,
     env: spec.kind === "api" ? spec.env : undefined,
+    supports: spec.supports,
     search: (query, ctx) => invoke(spec, query, ctx),
   };
 }
@@ -103,8 +103,7 @@ function tidy(item: SearchItem): SearchItem {
   return {
     title: item.title.replace(/\s+/g, " ").trim(),
     url: item.url,
-    description:
-      description.length > DESCRIPTION_MAX ? `${description.slice(0, DESCRIPTION_MAX - 1).trimEnd()}…` : description,
+    description,
   };
 }
 
@@ -126,9 +125,18 @@ export function createSearch<R extends Record<string, Provider>>(registry: R, op
   };
   const isReady = (id: Id) => !get(id).env || keyFor(id) !== "";
 
-  async function search(query: string, { limit = 10, only }: { limit?: number; only?: Id[] } = {}): Promise<SearchResult> {
-    const ready = (only ?? ids).filter(isReady);
-    if (ready.length === 0) return { success: false, error: "No providers configured." };
+  async function search(
+    query: string,
+    { limit = 10, only, filters = {} }: { limit?: number; only?: Id[]; filters?: SearchContext["filters"] } = {},
+  ): Promise<SearchResult> {
+    const configured = (only ?? ids).filter(isReady);
+    const ready = configured.filter((id) => get(id).supports?.(filters) ?? true);
+    if (ready.length === 0) {
+      return {
+        success: false,
+        error: configured.length === 0 ? "No providers configured." : "No configured providers support these filters.",
+      };
+    }
 
     const state = options.store.load();
     const start = (ready.findIndex((id) => id === state.last) + 1) % ready.length;
@@ -143,7 +151,7 @@ export function createSearch<R extends Record<string, Provider>>(registry: R, op
       }
       try {
         const signal = AbortSignal.timeout(timeoutMs);
-        const items = (await get(id).search(query, { limit, signal, key: keyFor(id) }))
+        const items = (await get(id).search(query, { limit, signal, key: keyFor(id), filters }))
           .filter((item) => item.url)
           .map(tidy)
           .slice(0, limit);

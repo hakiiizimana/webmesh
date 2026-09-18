@@ -21,11 +21,19 @@ const join = (parts: z.infer<typeof fragments>) => parts.map((p) => p.value).joi
 const tavilyResponse = z.object({
   results: z.array(z.object({ title: z.string(), url: z.string(), content: z.string() })),
 });
-const firecrawlResponse = z.object({
-  data: z.object({ web: z.array(z.object({ url: z.string(), title: z.string().optional(), description: z.string().optional() })).optional() }),
+const firecrawlHit = z.object({
+  url: z.string(),
+  title: z.string().optional(),
+  description: z.string().optional(),
+  snippet: z.string().optional(),
 });
+const firecrawlResponse = z.object({
+  data: z.object({ web: z.array(firecrawlHit).optional(), news: z.array(firecrawlHit).optional() }),
+});
+const braveHit = z.object({ title: z.string(), url: z.string(), description: z.string().optional(), snippet: z.string().optional() });
 const braveResponse = z.object({
-  web: z.object({ results: z.array(z.object({ title: z.string(), url: z.string(), description: z.string().optional() })) }).optional(),
+  web: z.object({ results: z.array(braveHit) }).optional(),
+  news: z.object({ results: z.array(braveHit) }).optional(),
 });
 
 const snippet = 'div.snippet[data-type="web"]';
@@ -68,11 +76,19 @@ export const parsers = {
   },
   firecrawl: (_query: string, body: string) => {
     const res = firecrawlResponse.parse(JSON.parse(body));
-    return items((res.data.web ?? []).map((r) => ({ title: r.title, url: r.url, description: r.description })));
+    return items([...(res.data.web ?? []), ...(res.data.news ?? [])].map((r) => ({
+      title: r.title,
+      url: r.url,
+      description: r.description ?? r.snippet,
+    })));
   },
   brave: (_query: string, body: string) => {
     const res = braveResponse.parse(JSON.parse(body));
-    return (res.web?.results ?? []).map((r) => ({ title: clean(r.title), url: r.url, description: clean(r.description ?? "") }));
+    return [...(res.web?.results ?? []), ...(res.news?.results ?? [])].map((r) => ({
+      title: clean(r.title),
+      url: r.url,
+      description: clean(r.description ?? r.snippet ?? ""),
+    }));
   },
   "brave-web": (query: string, body: string) =>
     scrapeResults(query, body, {

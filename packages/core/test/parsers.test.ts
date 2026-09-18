@@ -43,6 +43,30 @@ test("brave web reads title, url, and snippet", async () => {
   });
 });
 
+test("parses Firecrawl news results", async () => {
+  const items = await parse(
+    "firecrawl",
+    QUERY,
+    JSON.stringify({
+      data: {
+        news: [{ title: "Rust news", url: "https://news.example.com/rust", snippet: "A Rust update" }],
+      },
+    }),
+  );
+  expect(items).toEqual([{ title: "Rust news", url: "https://news.example.com/rust", description: "A Rust update" }]);
+});
+
+test("parses Brave news results", async () => {
+  const items = await parse(
+    "brave",
+    QUERY,
+    JSON.stringify({
+      news: { results: [{ title: "Rust news", url: "https://news.example.com/rust", description: "A Rust update" }] },
+    }),
+  );
+  expect(items).toEqual([{ title: "Rust news", url: "https://news.example.com/rust", description: "A Rust update" }]);
+});
+
 test("exa mcp parses --- blocks and treats Title N/A as the url", async () => {
   const items = await parse(
     "exa-mcp",

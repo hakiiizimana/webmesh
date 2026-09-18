@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { HttpError } from "../src/http";
 import { createSearch } from "../src/webSearch";
 import { memoryStore } from "../src/state";
-import type { Provider, SearchItem } from "../src/types";
+import type { Provider, SearchFilters, SearchItem } from "../src/types";
 
 const item = (url: string): SearchItem => ({ title: url, url, description: "" });
 
@@ -63,5 +63,43 @@ describe("round robin", () => {
     const result = await createSearch(registry, { store: memoryStore(), env: {} }).search("q");
     expect(result.success).toBe(false);
     if (!result.success) expect(result.error).toContain("a: no results");
+  });
+
+  test("passes filters through and keeps the complete description", async () => {
+    const filters: SearchFilters = {
+      freshness: "week",
+      includeDomains: ["example.com"],
+      type: "news",
+      exactMatch: true,
+    };
+    const description = "long result ".repeat(99) + "long result";
+    let received: SearchFilters | undefined;
+    const registry = {
+      a: {
+        kind: "api" as const,
+        async search(_query: string, context: { filters: SearchFilters }) {
+          received = context.filters;
+          return [{ title: "Result", url: "https://example.com", description }];
+        },
+      },
+    };
+
+    const result = await createSearch(registry, { store: memoryStore(), env: {} }).search("q", { filters });
+
+    expect(received).toEqual(filters);
+    expect(result).toEqual({ success: true, data: [{ title: "Result", url: "https://example.com", description }] });
+  });
+
+  test("skips providers that cannot honor requested filters", async () => {
+    const skipped = Object.assign(fake([item("https://skipped.com")]), { supports: () => false });
+    const used = fake([item("https://used.com")]);
+    const result = await createSearch(
+      { skipped, used },
+      { store: memoryStore(), env: {} },
+    ).search("q", { filters: { language: "en" } });
+
+    expect(result).toEqual({ success: true, data: [item("https://used.com")] });
+    expect(skipped.calls).toHaveLength(0);
+    expect(used.calls).toHaveLength(1);
   });
 });
