@@ -1,6 +1,7 @@
 import type { Json } from "./http";
 import type { ParserId } from "./parser";
-import type { Freshness, FreshnessRange, SearchFilters } from "./types";
+import type { Freshness, FreshnessRange, Provider, SearchFilters } from "./types";
+import { searchYoutube } from "./youtube";
 
 type FilterName = keyof SearchFilters;
 type FilterSupport = (filters: SearchFilters) => boolean;
@@ -108,7 +109,7 @@ type Mcp = {
 
 type Get = {
   method: "GET";
-  url: (query: string, limit: number, filters: SearchFilters, key?: string) => string;
+  url: (query: string, limit: number, filters: SearchFilters) => string;
   parser: ParserId;
   headers?: (key: string) => Record<string, string>;
   supports?: FilterSupport;
@@ -131,7 +132,13 @@ type Scrape = {
   supports?: FilterSupport;
 };
 
-export type ProviderSpec = Mcp | Get | Post | Scrape;
+type Custom = {
+  kind: "public";
+  search: Provider["search"];
+  supports?: FilterSupport;
+};
+
+export type ProviderSpec = Mcp | Get | Post | Scrape | Custom;
 
 const SESSION = crypto.randomUUID().replaceAll("-", "");
 const keenableBody = (query: string, limit: number) => ({ query, max_results: Math.min(limit, 50) });
@@ -157,7 +164,21 @@ function braveSupports(filters: SearchFilters): boolean {
     "language",
     "safeSearch",
     "exactMatch",
-  )(filters);
+  )(filters) && (filters.type === undefined || filters.type === "web" || filters.type === "news");
+}
+
+function tavilySupports(filters: SearchFilters): boolean {
+  return onlyFilters(
+    "freshness",
+    "includeDomains",
+    "excludeDomains",
+    "type",
+    "country",
+    "language",
+    "safeSearch",
+    "exactMatch",
+    "searchDepth",
+  )(filters) && (filters.type === undefined || filters.type === "web" || filters.type === "news");
 }
 
 function parallelSupports(filters: SearchFilters): boolean {
@@ -182,6 +203,7 @@ function firecrawlSupports(filters: SearchFilters): boolean {
     )(filters)
   )
     return false;
+  if (filters.type === "video") return false;
   return !(filters.type === "news" && filters.freshness !== undefined);
 }
 
@@ -275,29 +297,11 @@ function braveUrl(query: string, limit: number, filters: SearchFilters): string 
 
 function youtubeSupports(filters: SearchFilters): boolean {
   return (
-    onlyFilters("freshness", "type", "country", "language", "safeSearch")(filters) &&
-    (filters.type === undefined || filters.type === "web") &&
-    (filters.country === undefined || /^[a-z]{2}$/i.test(filters.country))
+    filters.type === "video" &&
+    onlyFilters("freshness", "type", "country", "language")(filters) &&
+    (filters.country === undefined || /^[a-z]{2}$/i.test(filters.country)) &&
+    (filters.freshness === undefined || !isFreshnessRange(filters.freshness))
   );
-}
-
-function youtubeUrl(query: string, limit: number, filters: SearchFilters, key = ""): string {
-  const params = new URLSearchParams({
-    part: "snippet",
-    q: query,
-    type: "video",
-    maxResults: String(Math.min(limit, 50)),
-    key,
-  });
-  const range = dateRange(filters.freshness);
-  if (range) {
-    params.set("publishedAfter", dateStart(range.from));
-    if (range.to) params.set("publishedBefore", dateEnd(range.to));
-  }
-  if (filters.country) params.set("regionCode", filters.country.toUpperCase());
-  if (filters.language) params.set("relevanceLanguage", filters.language);
-  if (filters.safeSearch) params.set("safeSearch", filters.safeSearch === "off" ? "none" : filters.safeSearch);
-  return `https://www.googleapis.com/youtube/v3/search?${params}`;
 }
 
 /** Key order = rotation order. `env` means the provider joins only when that var is set. */
@@ -397,6 +401,7 @@ export const providers = {
     parser: "tavily",
     headers: (key) => ({ authorization: `Bearer ${key}` }),
     body: tavilyBody,
+    supports: tavilySupports,
   },
   keenable: {
     kind: "api",
@@ -418,11 +423,8 @@ export const providers = {
     supports: braveSupports,
   },
   youtube: {
-    kind: "api",
-    env: "YOUTUBE_API_KEY",
-    method: "GET",
-    url: youtubeUrl,
-    parser: "youtube",
+    kind: "public",
+    search: searchYoutube,
     supports: youtubeSupports,
   },
   firecrawl: {

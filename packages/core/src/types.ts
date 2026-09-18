@@ -13,7 +13,7 @@ export type SearchFilters = {
   freshness?: Freshness;
   includeDomains?: string[];
   excludeDomains?: string[];
-  type?: "web" | "news";
+  type?: "web" | "news" | "video";
   country?: string;
   language?: string;
   safeSearch?: "strict" | "moderate" | "off";

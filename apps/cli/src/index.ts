@@ -20,7 +20,7 @@ const filtersSchema = z.object({
   freshness: z.union([z.enum(["day", "week", "month", "year"]), z.object({ from: date, to: date.optional() })]).optional(),
   includeDomains: z.array(z.string().min(1)).optional(),
   excludeDomains: z.array(z.string().min(1)).optional(),
-  type: z.enum(["web", "news"]).optional(),
+  type: z.enum(["web", "news", "video"]).optional(),
   country: z.string().min(1).optional(),
   language: z.string().min(1).optional(),
   safeSearch: z.enum(["strict", "moderate", "off"]).optional(),
@@ -128,7 +128,7 @@ const USAGE = `webmesh search <query>     search the web (JSON)
       --freshness <value>    day, week, month, year, or FROM..TO
       --include-domains <a,b>
       --exclude-domains <a,b>
-      --type <web|news>
+      --type <web|news|video>
       --country <code|name>
       --language <code>
       --safe-search <strict|moderate|off>

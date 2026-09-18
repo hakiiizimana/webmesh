@@ -35,14 +35,6 @@ const braveResponse = z.object({
   web: z.object({ results: z.array(braveHit) }).optional(),
   news: z.object({ results: z.array(braveHit) }).optional(),
 });
-const youtubeResponse = z.object({
-  items: z.array(
-    z.object({
-      id: z.object({ videoId: z.string().optional() }),
-      snippet: z.object({ title: z.string(), description: z.string() }),
-    }),
-  ),
-});
 
 const snippet = 'div.snippet[data-type="web"]';
 
@@ -97,17 +89,6 @@ export const parsers = {
       url: r.url,
       description: clean(r.description ?? r.snippet ?? ""),
     }));
-  },
-  youtube: (_query: string, body: string) => {
-    const res = youtubeResponse.parse(JSON.parse(body));
-    return res.items.flatMap((item) => {
-      if (!item.id.videoId) return [];
-      return [{
-        title: item.snippet.title,
-        url: `https://www.youtube.com/watch?v=${item.id.videoId}`,
-        description: item.snippet.description,
-      }];
-    });
   },
   "brave-web": (query: string, body: string) =>
     scrapeResults(query, body, {

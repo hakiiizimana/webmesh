@@ -1,0 +1,237 @@
+import { request, type Json } from "./http";
+import type { SearchContext, SearchFilters, SearchItem } from "./types";
+
+// Public WEB client values shipped by YouTube itself; they are not account credentials.
+const INNERTUBE_API_KEY = "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8";
+const WEB_CLIENT_VERSION = "2.20260310.01.00";
+const INNERTUBE_URL =
+  `https://www.youtube.com/youtubei/v1/search?key=${encodeURIComponent(INNERTUBE_API_KEY)}&prettyPrint=false`;
+
+type YoutubeJsonValue = YoutubeJsonObject | YoutubeJsonValue[] | boolean | null | number | string;
+
+interface YoutubeJsonObject {
+  readonly [key: string]: YoutubeJsonValue;
+}
+
+const isObject = (value: YoutubeJsonValue | undefined): value is YoutubeJsonObject =>
+  value instanceof Object && !Array.isArray(value);
+
+const isString = (value: YoutubeJsonValue | undefined): value is string => value === String(value);
+
+const objectAt = (value: YoutubeJsonObject | null, key: string): YoutubeJsonObject | null => {
+  const child = value?.[key];
+  return isObject(child) ? child : null;
+};
+
+const trimmedStringAt = (value: YoutubeJsonObject | null, key: string): string | null => {
+  const child = value?.[key];
+  return isString(child) && child.trim() !== "" ? child.trim() : null;
+};
+
+const jsonObjectFrom = (body: string): YoutubeJsonObject | null => {
+  let parsed: YoutubeJsonValue;
+  try {
+    // SAFETY: the parsed value is only read through the guards in this module.
+    parsed = JSON.parse(body) as YoutubeJsonValue;
+  } catch {
+    return null;
+  }
+  return isObject(parsed) ? parsed : null;
+};
+
+const textFrom = (value: YoutubeJsonValue | undefined): string | undefined => {
+  if (isString(value)) return value.trim() || undefined;
+  if (!isObject(value)) return undefined;
+  const direct = trimmedStringAt(value, "simpleText") ?? trimmedStringAt(value, "content");
+  if (direct !== null) return direct;
+  if (!Array.isArray(value.runs)) return undefined;
+  const text = value.runs
+    .filter(isObject)
+    .map((run) => trimmedStringAt(run, "text") ?? trimmedStringAt(run, "content") ?? "")
+    .join("")
+    .trim();
+  return text || undefined;
+};
+
+const textAt = (value: YoutubeJsonObject | null, key: string): string | undefined =>
+  textFrom(value?.[key]);
+
+const findString = (value: YoutubeJsonValue | undefined, key: string): string | undefined => {
+  if (value === undefined) return undefined;
+  if (Array.isArray(value)) {
+    for (const child of value) {
+      const found = findString(child, key);
+      if (found !== undefined) return found;
+    }
+    return undefined;
+  }
+  if (!isObject(value)) return undefined;
+  const direct = trimmedStringAt(value, key);
+  if (direct !== null) return direct;
+  for (const child of Object.values(value)) {
+    const found = findString(child, key);
+    if (found !== undefined) return found;
+  }
+  return undefined;
+};
+
+const textFromFirst = (...values: Array<string | undefined>): string | undefined =>
+  values.find((value) => value !== undefined && value.length > 0);
+
+const VIDEO_LOCKUP_TYPES = new Set([
+  "LOCKUP_CONTENT_TYPE_VIDEO",
+  "LOCKUP_CONTENT_TYPE_SHORT",
+  "LOCKUP_CONTENT_TYPE_MOVIE",
+]);
+
+const youtubeVideoUrl = (id: string): string => `https://www.youtube.com/watch?v=${encodeURIComponent(id)}`;
+
+const videoFromShort = (renderer: YoutubeJsonObject): SearchItem | null => {
+  const entityId = trimmedStringAt(renderer, "entityId");
+  const id =
+    findString(renderer.onTap, "videoId") ??
+    (entityId?.startsWith("shorts-shelf-item-") === true
+      ? entityId.slice("shorts-shelf-item-".length)
+      : undefined);
+  const overlay = objectAt(renderer, "overlayMetadata");
+  const title = textFromFirst(textAt(overlay, "primaryText"), textAt(renderer, "title"));
+  if (id === undefined || id === "" || title === undefined) return null;
+  return {
+    title,
+    url: youtubeVideoUrl(id),
+    description: textFromFirst(textAt(renderer, "descriptionSnippet"), textAt(renderer, "description")) ?? "",
+  };
+};
+
+const videoFromItem = (item: YoutubeJsonObject): SearchItem | null => {
+  const short = objectAt(item, "shortsLockupViewModel");
+  if (short !== null) return videoFromShort(short);
+
+  const lockup = objectAt(item, "lockupViewModel");
+  const contentType = trimmedStringAt(lockup, "contentType");
+  if (contentType !== null && !VIDEO_LOCKUP_TYPES.has(contentType)) return null;
+
+  const legacy = objectAt(item, "videoRenderer") ?? objectAt(item, "movieRenderer");
+  if (legacy === null && lockup === null) return null;
+
+  const metadata = objectAt(objectAt(lockup, "metadata"), "lockupMetadataViewModel");
+  const id =
+    trimmedStringAt(legacy, "videoId") ??
+    trimmedStringAt(legacy, "movieId") ??
+    trimmedStringAt(lockup, "contentId");
+  const title = textFromFirst(textAt(legacy, "title"), textAt(metadata, "title"), textAt(lockup, "title"));
+  if (id === null || title === undefined) return null;
+
+  return {
+    title,
+    url: youtubeVideoUrl(id),
+    description:
+      textFromFirst(
+        textAt(legacy, "descriptionSnippet"),
+        textAt(legacy, "description"),
+        textAt(lockup, "descriptionSnippet"),
+        textAt(lockup, "description"),
+      ) ?? "",
+  };
+};
+
+const RENDERER_KEYS = ["videoRenderer", "movieRenderer", "lockupViewModel", "shortsLockupViewModel"] as const;
+
+const collectVideoItems = (value: YoutubeJsonValue, items: YoutubeJsonObject[]): void => {
+  if (Array.isArray(value)) {
+    for (const child of value) collectVideoItems(child, items);
+    return;
+  }
+  if (!isObject(value)) return;
+  if (RENDERER_KEYS.some((key) => objectAt(value, key) !== null)) items.push(value);
+  for (const child of Object.values(value)) collectVideoItems(child, items);
+};
+
+export const parseYoutubeSearchResponse = (body: string): SearchItem[] => {
+  const root = jsonObjectFrom(body);
+  if (root === null) throw new Error("YouTube InnerTube response was not JSON");
+
+  const items: YoutubeJsonObject[] = [];
+  collectVideoItems(root, items);
+  const seen = new Set<string>();
+  const results: SearchItem[] = [];
+  for (const item of items) {
+    const result = videoFromItem(item);
+    if (result === null || seen.has(result.url)) continue;
+    seen.add(result.url);
+    results.push(result);
+  }
+  return results;
+};
+
+const appendVarint = (bytes: number[], value: number): void => {
+  let remaining = value;
+  do {
+    const byte = remaining & 0x7f;
+    remaining >>>= 7;
+    bytes.push(remaining === 0 ? byte : byte | 0x80);
+  } while (remaining !== 0);
+};
+
+const appendField = (bytes: number[], field: number, value: number): void => {
+  appendVarint(bytes, field << 3);
+  appendVarint(bytes, value);
+};
+
+const uploadDateValue = (freshness: SearchFilters["freshness"]): number => {
+  switch (freshness) {
+    case "day":
+      return 2;
+    case "week":
+      return 3;
+    case "month":
+      return 4;
+    case "year":
+      return 5;
+    default:
+      return 0;
+  }
+};
+
+/** Encodes the same InnerTube SearchProto used by Stophy's YouTube search path. */
+export const youtubeSearchParamsFor = (filters: SearchFilters): string => {
+  const filterBytes: number[] = [];
+  const uploadDate = uploadDateValue(filters.freshness);
+  if (uploadDate !== 0) appendField(filterBytes, 1, uploadDate);
+  appendField(filterBytes, 2, 1); // video
+
+  const params: number[] = [];
+  appendVarint(params, (2 << 3) | 2);
+  appendVarint(params, filterBytes.length);
+  params.push(...filterBytes);
+  return Buffer.from(params).toString("base64");
+};
+
+const youtubeContextFor = (filters: SearchFilters) => ({
+  client: {
+    clientName: "WEB",
+    clientVersion: WEB_CLIENT_VERSION,
+    gl: filters.country?.toUpperCase() ?? "US",
+    hl: filters.language ?? "en",
+  },
+});
+
+export const youtubeSearchBodyFor = (query: string, filters: SearchFilters): Json => ({
+  context: youtubeContextFor(filters),
+  params: youtubeSearchParamsFor(filters),
+  query,
+});
+
+export const searchYoutube = async (query: string, context: SearchContext): Promise<SearchItem[]> => {
+  const response = await request(INNERTUBE_URL, {
+    method: "POST",
+    headers: {
+      accept: "application/json",
+      "content-type": "application/json",
+      origin: "https://www.youtube.com",
+    },
+    body: JSON.stringify(youtubeSearchBodyFor(query, context.filters)),
+    signal: context.signal,
+  });
+  return parseYoutubeSearchResponse(await response.text()).slice(0, context.limit);
+};

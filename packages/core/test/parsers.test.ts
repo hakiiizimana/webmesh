@@ -67,26 +67,20 @@ test("parses Brave news results", async () => {
   expect(items).toEqual([{ title: "Rust news", url: "https://news.example.com/rust", description: "A Rust update" }]);
 });
 
-test("parses YouTube video results", async () => {
+test("parses Parallel structured results without truncating excerpts", async () => {
+  const description = "A complete excerpt. ".repeat(20).trim();
   const items = await parse(
-    "youtube",
+    "parallel",
     QUERY,
     JSON.stringify({
-      items: [
-        {
-          id: { kind: "youtube#video", videoId: "abc123" },
-          snippet: { title: "Rust ownership", description: "A Rust ownership tutorial" },
-        },
-      ],
+      search_id: "search-123",
+      results: [{ title: "Rust book", url: "https://doc.rust-lang.org/book/", publish_date: null, excerpts: [description] }],
+      warnings: null,
+      metadata: null,
+      session_id: "session-123",
     }),
   );
-  expect(items).toEqual([
-    {
-      title: "Rust ownership",
-      url: "https://www.youtube.com/watch?v=abc123",
-      description: "A Rust ownership tutorial",
-    },
-  ]);
+  expect(items).toEqual([{ title: "Rust book", url: "https://doc.rust-lang.org/book/", description }]);
 });
 
 test("exa mcp parses --- blocks and treats Title N/A as the url", async () => {

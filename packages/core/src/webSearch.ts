@@ -17,13 +17,20 @@ const toolResponse = z.object({
   result: z
     .object({
       content: z.array(z.object({ text: z.string().optional() })).default([]),
+      structuredContent: z.record(z.string(), z.unknown()).optional(),
       isError: z.boolean().optional(),
     })
     .optional(),
   error: z.object({ message: z.string() }).optional(),
 });
 
-async function callMcp(url: string, name: string, args: Json, signal: AbortSignal): Promise<string> {
+async function callMcp(
+  url: string,
+  name: string,
+  args: Json,
+  signal: AbortSignal,
+  preferStructured: boolean,
+): Promise<string> {
   const res = await request(url, {
     method: "POST",
     headers: { "content-type": "application/json", accept: "application/json, text/event-stream" },
@@ -38,12 +45,25 @@ async function callMcp(url: string, name: string, args: Json, signal: AbortSigna
   const msg = toolResponse.parse(JSON.parse(json));
   const text = msg.result?.content.map((c) => c.text ?? "").join("\n") ?? "";
   if (msg.error || msg.result?.isError) throw new Error(`${name}: ${msg.error?.message ?? text.slice(0, 200)}`);
+  if (preferStructured && msg.result?.structuredContent !== undefined) {
+    return JSON.stringify(msg.result.structuredContent);
+  }
   return text;
 }
 
 async function invoke(spec: ProviderSpec, query: string, ctx: SearchContext): Promise<SearchItem[]> {
   const { limit, signal, key, filters } = ctx;
-  if (spec.kind === "mcp") return parse(spec.parser, query, await callMcp(spec.url, spec.tool, spec.args(query, limit, filters), signal));
+  if (spec.kind === "mcp") {
+    const body = await callMcp(
+      spec.url,
+      spec.tool,
+      spec.args(query, limit, filters),
+      signal,
+      spec.parser === "parallel",
+    );
+    return parse(spec.parser, query, body);
+  }
+  if ("search" in spec) return spec.search(query, ctx);
   if (spec.kind === "scrape") {
     const res = await request(spec.url(query, filters), { signal, browser: true, headers: spec.headers });
     if (res.status === 202) throw new HttpError(202, undefined, "HTTP 202: DuckDuckGo bot check");
@@ -58,7 +78,7 @@ async function invoke(spec: ProviderSpec, query: string, ctx: SearchContext): Pr
           body: JSON.stringify(spec.body(query, limit, filters)),
           signal,
         })
-      : await request(spec.url(query, limit, filters, key), { headers: { accept: "application/json", ...headers }, signal });
+      : await request(spec.url(query, limit, filters), { headers: { accept: "application/json", ...headers }, signal });
   return parse(spec.parser, query, await res.text());
 }
 

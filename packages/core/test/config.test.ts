@@ -94,31 +94,17 @@ test("builds Parallel deep search filters", () => {
   });
 });
 
-test("builds YouTube web filters", () => {
-  const url = new URL(
-    providers.youtube.url(
-      "rust ownership",
-      80,
-      {
-        freshness: { from: "2026-01-01", to: "2026-01-31" },
-        type: "web",
-        country: "si",
-        language: "en",
-        safeSearch: "strict",
-      },
-      "youtube-key",
-    ),
-  );
-
-  expect(url.searchParams.get("part")).toBe("snippet");
-  expect(url.searchParams.get("type")).toBe("video");
-  expect(url.searchParams.get("maxResults")).toBe("50");
-  expect(url.searchParams.get("publishedAfter")).toBe("2026-01-01T00:00:00.000Z");
-  expect(url.searchParams.get("publishedBefore")).toBe("2026-01-31T23:59:59.999Z");
-  expect(url.searchParams.get("regionCode")).toBe("SI");
-  expect(url.searchParams.get("relevanceLanguage")).toBe("en");
-  expect(url.searchParams.get("safeSearch")).toBe("strict");
-  expect(url.searchParams.get("key")).toBe("youtube-key");
+test("routes YouTube only for supported video filters", () => {
+  expect(providers.youtube.kind).toBe("public");
   expect(providers.youtube.supports?.({ type: "news" })).toBe(false);
-  expect(providers.youtube.supports?.({ type: "web" })).toBe(true);
+  expect(providers.youtube.supports?.({ type: "web" })).toBe(false);
+  expect(providers.youtube.supports?.({ type: "video" })).toBe(true);
+  expect(
+    providers.youtube.supports?.({
+      type: "video",
+      freshness: { from: "2026-01-01", to: "2026-01-31" },
+    }),
+  ).toBe(false);
+  expect(providers.tavily.supports?.({ type: "video" })).toBe(false);
+  expect(providers.brave.supports?.({ type: "video" })).toBe(false);
 });
