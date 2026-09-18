@@ -1,0 +1,32 @@
+{
+  "name": "webmesh",
+  "private": true,
+  "type": "module",
+  "workspaces": {
+    "packages": [
+      "apps/*",
+      "packages/*"
+    ],
+    "catalog": {
+      "@types/bun": "^1.3.14",
+      "typescript": "^6.0.3",
+      "zod": "^4.6.5"
+    }
+  },
+  "scripts": {
+    "check-types": "turbo run check-types",
+    "test": "turbo run test",
+    "search": "bun apps/cli/src/index.ts search",
+    "mcp": "bun apps/cli/src/index.ts mcp",
+    "lint": "oxlint",
+    "check-slop": "oxlint --deny-warnings"
+  },
+  "devDependencies": {
+    "@oxlint/plugins": "1.83.0",
+    "@types/bun": "catalog:",
+    "oxlint": "1.83.0",
+    "turbo": "^2.10.7",
+    "typescript": "catalog:"
+  },
+  "packageManager": "bun@1.4.2"
+}
