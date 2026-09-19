@@ -153,6 +153,9 @@ export function createBrowser(session: string, { restore, redact: hide = false, 
   }
 
   async function execute(args: string[], signal?: AbortSignal): Promise<BrowserResult> {
+    if (args[0] === "close" && args.includes("--all")) {
+      return { success: false, error: "webmesh cannot close browser sessions owned by other agents; drop --all." };
+    }
     const bin = agentBrowserPath();
     if (!bin) return { success: false, error: "agent-browser is not installed." };
     if (args.some((arg) => arg === "--session" || arg.startsWith("--session="))) {

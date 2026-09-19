@@ -220,6 +220,7 @@ async function serveMcp() {
           '["screenshot", "--annotate"] labels elements with their refs; add "--if-changed" to skip unchanged images. ' +
           '["read"] returns the rendered page as text. Also ["get", "text", "@e1"], ["select", "@e4", "value"], ["upload", "@e5", "/path"], ' +
           '["scroll", "down"], ["tab", "list"], ["back"]. ["skills", "get", "core"] returns the full guide. ' +
+          "Use absolute paths for pdf, upload, and --screenshot-dir; relative paths resolve from agent-browser's background process. " +
           "Sessions start with the logins saved by `webmesh login`. Secrets in output are redacted. " +
           "The session belongs to this server and closes when it exits. Returns JSON: { success, data } or { success, error }.",
         inputSchema: {

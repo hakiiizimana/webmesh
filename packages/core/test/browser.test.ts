@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { parseOutput, redact } from "../src/browser";
+import { createBrowser, parseOutput, redact } from "../src/browser";
 
 const lifecycle = { launched: false, reused: true, restoreStatus: "not_configured" };
 
@@ -45,4 +45,13 @@ test("redacts cookies, secret fields, tokens in text, and secret URL params", ()
   expect(cookies).toEqual([{ name: "sid", value: "[redacted]", domain: ".github.com" }]);
   expect(storage).toEqual({ theme: "dark", auth_token: "[redacted]" });
   expect(text).toBe("key [redacted] and [redacted] and https://app.example/cb?access_token=[redacted]&page=2");
+});
+
+test("rejects closing every agent-browser session", async () => {
+  const browser = createBrowser("webmesh-test");
+
+  expect(await browser.run(["close", "--all"])).toEqual({
+    success: false,
+    error: "webmesh cannot close browser sessions owned by other agents; drop --all.",
+  });
 });
