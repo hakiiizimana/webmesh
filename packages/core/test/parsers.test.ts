@@ -113,3 +113,28 @@ test("assertRelevant flags off-topic pages as a soft block", () => {
   expect(() => assertRelevant(QUERY, junk)).toThrow(SoftBlockError);
   expect(() => assertRelevant(QUERY, [...junk, { title: "Rust book", url: "https://x.dev", description: "" }])).not.toThrow();
 });
+
+test("reads publish dates as YYYY-MM-DD and drops relative ones", async () => {
+  const parallel = await parse(
+    "parallel",
+    QUERY,
+    JSON.stringify({ results: [{ url: "https://bun.sh/blog/bun-v1.3", title: "Bun 1.3", publish_date: "2025-10-10" }] }),
+  );
+  const exaMcp = await parse("exa-mcp", QUERY, "Title: Bun 1.3\nURL: https://bun.sh/blog/bun-v1.3\nPublished: 2025-10-10T00:00:00.000Z\nHighlights:\nBun 1.3");
+  const firecrawl = await parse(
+    "firecrawl",
+    QUERY,
+    JSON.stringify({
+      data: {
+        news: [
+          { url: "https://a.example.com", title: "Absolute", date: "May 6, 2026" },
+          { url: "https://b.example.com", title: "Relative", date: "1 week ago" },
+        ],
+      },
+    }),
+  );
+
+  expect(parallel[0]?.publishedAt).toBe("2025-10-10");
+  expect(exaMcp[0]?.publishedAt).toBe("2025-10-10");
+  expect(firecrawl.map((item) => item.publishedAt)).toEqual(["2026-05-06", undefined]);
+});

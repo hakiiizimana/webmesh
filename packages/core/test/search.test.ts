@@ -55,7 +55,7 @@ describe("router", () => {
     const registry = { keyed: fake([item("https://k.com")], "KEY"), free: fake([item("https://f.com")]) };
     const result = await setup(registry, { env: { KEY: "k" } }).search("q");
 
-    expect(result).toEqual({ success: true, data: [item("https://f.com")] });
+    expect(result).toEqual({ success: true, provider: "free", attempts: [], data: [item("https://f.com")] });
     expect(registry.keyed.calls).toHaveLength(0);
   });
 
@@ -75,7 +75,7 @@ describe("router", () => {
     const fast = fake([item("https://fast.com")]);
     const result = await setup({ slow, fast }, { hedgeMs: 10 }).search("q");
 
-    expect(result).toEqual({ success: true, data: [item("https://fast.com")] });
+    expect(result).toEqual({ success: true, provider: "fast", attempts: [], data: [item("https://fast.com")] });
     expect(slow.cancelled).toHaveLength(1);
   });
 
@@ -110,7 +110,12 @@ describe("router", () => {
     };
     const { search } = setup(registry, { now: () => clock });
 
-    expect(await search("q-1")).toEqual({ success: true, data: [item("https://b.com")] });
+    expect(await search("q-1")).toEqual({
+      success: true,
+      provider: "b",
+      attempts: ["a: HTTP 429"],
+      data: [item("https://b.com")],
+    });
     await search("q-2");
     expect(registry.a.calls).toHaveLength(1);
 
@@ -191,7 +196,12 @@ describe("router", () => {
     const result = await setup(registry).search("q", { filters });
 
     expect(received).toEqual(filters);
-    expect(result).toEqual({ success: true, data: [{ title: "Result", url: "https://example.com", description }] });
+    expect(result).toEqual({
+      success: true,
+      provider: "a",
+      attempts: [],
+      data: [{ title: "Result", url: "https://example.com", description }],
+    });
   });
 
   test("skips providers that cannot honor requested filters", async () => {
@@ -199,7 +209,7 @@ describe("router", () => {
     const used = fake([item("https://used.com")]);
     const result = await setup({ skipped, used }).search("q", { filters: { language: "en" } });
 
-    expect(result).toEqual({ success: true, data: [item("https://used.com")] });
+    expect(result).toEqual({ success: true, provider: "used", attempts: [], data: [item("https://used.com")] });
     expect(skipped.calls).toHaveLength(0);
     expect(used.calls).toHaveLength(1);
   });
@@ -210,6 +220,6 @@ describe("router", () => {
     });
     const result = await setup({ plain }).search("q", { filters: { type: "web", searchDepth: "fast" } });
 
-    expect(result).toEqual({ success: true, data: [item("https://p.com")] });
+    expect(result).toEqual({ success: true, provider: "plain", attempts: [], data: [item("https://p.com")] });
   });
 });

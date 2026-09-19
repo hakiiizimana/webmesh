@@ -103,7 +103,8 @@ async function serveMcp() {
     {
       title: "Web search",
       description:
-        "Search the web. Returns JSON: { success, data: [{ title, url, description }] }. " +
+        "Search the web. Returns JSON: { success, provider, attempts, data: [{ title, url, description, publishedAt? }] }. " +
+        "publishedAt is YYYY-MM-DD when the provider reports it. " +
         "Routes to the most reliable free search providers, falls back when one fails or is slow, " +
         "and uses keyed providers only when free ones can't answer.",
       inputSchema: {

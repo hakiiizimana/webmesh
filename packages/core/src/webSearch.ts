@@ -4,7 +4,7 @@ import { SoftBlockError } from "./html";
 import { HttpError, type Json, NetworkError, request } from "./http";
 import { parse } from "./parser";
 import type { ProviderHealth, RoutingState, StateStore } from "./state";
-import type { Provider, SearchContext, SearchFilters, SearchItem, SearchResult } from "./types";
+import type { Provider, SearchContext, SearchFilters, SearchItem, SearchResult, SuccessfulSearch } from "./types";
 
 const BLOCKED_MS = 10 * 60_000;
 const TRANSIENT_MS = 30_000;
@@ -196,7 +196,6 @@ function tidy(item: SearchItem): SearchItem {
   };
 }
 
-type SuccessfulSearch = Extract<SearchResult, { success: true }>;
 type CacheEntry = { result: SuccessfulSearch; expiresAt: number };
 
 function cacheTtl(filters: SearchContext["filters"]): number {
@@ -247,7 +246,7 @@ function cacheKey(query: string, limit: number, providerIds: readonly string[], 
 }
 
 function copyResult(result: SuccessfulSearch): SuccessfulSearch {
-  return { success: true, data: result.data.map((item) => ({ ...item })) };
+  return structuredClone(result);
 }
 
 /**
@@ -398,7 +397,7 @@ export function createSearch<R extends Record<string, Provider>>(registry: R, op
         }
         running.delete(next.id);
         if ("items" in next) {
-          const result: SuccessfulSearch = { success: true, data: next.items };
+          const result: SuccessfulSearch = { success: true, provider: next.id, attempts: failures, data: next.items };
           writeCache(key, result, filters);
           return result;
         }

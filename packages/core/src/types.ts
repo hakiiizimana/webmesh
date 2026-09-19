@@ -2,12 +2,17 @@ export type SearchItem = {
   title: string;
   url: string;
   description: string;
+  /** Publish date as YYYY-MM-DD, when the provider reports an absolute one. */
+  publishedAt?: string;
   durationSeconds?: number | null;
   channelUrl?: string | null;
   viewCount?: number | null;
 };
 
-export type SearchResult = { success: true; data: SearchItem[] } | { success: false; error: string };
+/** `provider` answered; `attempts` says what happened to each provider tried or skipped before it. */
+export type SuccessfulSearch = { success: true; provider: string; attempts: string[]; data: SearchItem[] };
+
+export type SearchResult = SuccessfulSearch | { success: false; error: string };
 
 export type FreshnessRange = { from: string; to?: string };
 export type Freshness = "day" | "week" | "month" | "year" | FreshnessRange;
