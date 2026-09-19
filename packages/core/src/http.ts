@@ -1,4 +1,4 @@
-import { Impit } from "impit";
+import { createSession, type Session } from "wreq-js";
 
 export class HttpError extends Error {
   constructor(
@@ -14,7 +14,13 @@ export class NetworkError extends Error {}
 
 export type Json = string | number | boolean | null | Json[] | { [key: string]: Json };
 
-type HttpResponse = Pick<Response, "ok" | "status" | "headers" | "text">;
+type HttpResponse = {
+  ok: boolean;
+  status: number;
+  headers: { get(name: string): string | null };
+  text(): Promise<string>;
+  bytes(): Promise<Uint8Array>;
+};
 
 type RequestOptions = {
   method?: "GET" | "POST";
@@ -26,29 +32,20 @@ type RequestOptions = {
   redirect?: "follow" | "manual" | "error";
 };
 
-function createCookieJar() {
-  const byHost = new Map<string, Map<string, string>>();
-  const host = (url: string) => URL.parse(url)?.hostname ?? "";
-  return {
-    getCookieString: (url: string) => [...(byHost.get(host(url))?.values() ?? [])].join("; "),
-    setCookie: (cookie: string, url: string) => {
-      const pair = cookie.split(";", 1)[0]?.trim() ?? "";
-      const eq = pair.indexOf("=");
-      if (eq < 1) return;
-      const jar = byHost.get(host(url)) ?? new Map<string, string>();
-      jar.set(pair.slice(0, eq), pair);
-      byHost.set(host(url), jar);
-    },
-  };
-}
+const CHROME = "chrome";
+const LINUX = "linux";
+const sessions = new Map<string, Promise<Session>>();
 
-const clients = new Map<string, Impit>();
-function browserClient(proxy: string | undefined): Impit {
-  const existing = clients.get(proxy ?? "");
+function browserSession(proxy: string | undefined): Promise<Session> {
+  const key = proxy ?? "";
+  const existing = sessions.get(key);
   if (existing) return existing;
-  const client = new Impit({ browser: "chrome", cookieJar: createCookieJar(), proxyUrl: proxy });
-  clients.set(proxy ?? "", client);
-  return client;
+  const created = createSession({ browser: CHROME, os: LINUX, proxy }).catch((error) => {
+    sessions.delete(key);
+    throw error;
+  });
+  sessions.set(key, created);
+  return created;
 }
 
 function parseRetryAfter(res: HttpResponse, body: string): number | undefined {
@@ -58,9 +55,10 @@ function parseRetryAfter(res: HttpResponse, body: string): number | undefined {
   return match ? Number(match[1]) : undefined;
 }
 
-async function send(url: string, { browser, proxy, ...init }: RequestOptions): Promise<HttpResponse> {
+async function send(url: string, options: RequestOptions): Promise<HttpResponse> {
+  const { browser, proxy, ...init } = options;
   try {
-    if (browser) return await browserClient(proxy).fetch(url, init);
+    if (browser) return await (await browserSession(proxy)).fetch(url, init);
     return await fetch(url, proxy ? { ...init, proxy } : init);
   } catch (err) {
     if (init.signal.aborted) throw err;

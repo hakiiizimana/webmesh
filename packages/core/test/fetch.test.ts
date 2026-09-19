@@ -1,5 +1,15 @@
 import { expect, test } from "bun:test";
-import { createFetch, fetchers, type FetchedPage, type Fetcher, pageFromExa, pageFromHtml, pageFromJina } from "../src/fetch";
+import {
+  createFetch,
+  fetchers,
+  type FetchedPage,
+  type Fetcher,
+  pageFromExa,
+  pageFromFirecrawl,
+  pageFromHtml,
+  pageFromJina,
+  pageFromParallel,
+} from "../src/fetch";
 import { HttpError } from "../src/http";
 import { TargetError } from "../src/router";
 import { memoryStore } from "../src/state";
@@ -194,4 +204,334 @@ test("blocks a redirect to a private address before following it", async () => {
     source.stop(true);
     destination.stop(true);
   }
+});
+
+test("preserves markdown responses from direct fetch without modifying markdown structure", async () => {
+  const rawMarkdown = "# Heading\n\n- item 1\n- item 2\n\n```ts\nconst x = 1;\n```";
+  const server = Bun.serve({
+    port: 0,
+    fetch: () =>
+      new Response(rawMarkdown, {
+        headers: { "content-type": "text/markdown; charset=utf-8" },
+      }),
+  });
+  try {
+    const resolve = async () => [{ address: "93.184.216.34", family: 4 }];
+    const result = await createFetch(
+      { direct: fetchers.direct },
+      { store: memoryStore(), env: {}, allowPrivateNetworks: true, resolve },
+    ).fetch(`http://127.0.0.1:${server.port}/readme.md`, { format: "markdown" });
+
+    expect(result).toMatchObject({
+      success: true,
+      provider: "direct",
+      data: {
+        content: rawMarkdown,
+        format: "markdown",
+        truncated: false,
+      },
+    });
+  } finally {
+    server.stop(true);
+  }
+});
+
+test("preserves markdown content from remote reader responses", () => {
+  const markdown = "## Section\n\nText with [link](https://example.com) and `code`";
+  const firecrawl = pageFromFirecrawl(
+    JSON.stringify({ data: { markdown, metadata: { title: "Title" } } }),
+    "https://example.com",
+    "markdown",
+  );
+  expect(firecrawl.content).toBe(markdown);
+
+  const parallel = pageFromParallel(
+    JSON.stringify({ results: [{ url: "https://example.com", full_content: markdown }] }),
+    "https://example.com",
+  );
+  expect(parallel.content).toBe(markdown);
+});
+
+test("normalizes HTML entity encoding in title and extracts clean markdown", async () => {
+  const rawHtml = `<!DOCTYPE html><html><head><title>Architecture &amp; Design &lt;Guide&gt;</title></head><body>
+  <article><h1>Architecture</h1><p>${"Real page content sentence. ".repeat(20)}</p></article></body></html>`;
+  const parsed = await pageFromHtml(rawHtml, "https://example.com/arch", "markdown");
+  expect(parsed.title).toBe("Architecture & Design <Guide>");
+  expect(parsed.content).toContain("Real page content sentence.");
+});
+
+test("normalizes xhtml responses using html parser", async () => {
+  const xhtml = `<?xml version="1.0" encoding="UTF-8"?>
+  <!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+  <html xmlns="http://www.w3.org/1999/xhtml"><head><title>XHTML Spec</title></head><body>
+  <article><h1>XHTML</h1><p>${"Valid xhtml content paragraph. ".repeat(25)}</p></article></body></html>`;
+  const server = Bun.serve({
+    port: 0,
+    fetch: () =>
+      new Response(xhtml, {
+        headers: { "content-type": "application/xhtml+xml; charset=utf-8" },
+      }),
+  });
+  try {
+    const resolve = async () => [{ address: "93.184.216.34", family: 4 }];
+    const result = await createFetch(
+      { direct: fetchers.direct },
+      { store: memoryStore(), env: {}, allowPrivateNetworks: true, resolve },
+    ).fetch(`http://127.0.0.1:${server.port}/spec.xhtml`, { format: "markdown" });
+
+    expect(result).toMatchObject({
+      success: true,
+      provider: "direct",
+      data: {
+        title: "XHTML Spec",
+        format: "markdown",
+      },
+    });
+    if (result.success) {
+      expect(result.data.content).toContain("Valid xhtml content paragraph.");
+    }
+  } finally {
+    server.stop(true);
+  }
+});
+
+test("local direct fetch rejects PDFs as unreadable locally and falls back to a reader", async () => {
+  const server = Bun.serve({
+    port: 0,
+    fetch: () =>
+      new Response("%PDF-1.5 fake binary pdf content", {
+        headers: { "content-type": "application/pdf" },
+      }),
+  });
+  try {
+    const resolve = async () => [{ address: "93.184.216.34", family: 4 }];
+    const reader = fetcher(page("extracted pdf text content"));
+    const client = createFetch(
+      { direct: fetchers.direct, reader },
+      { store: memoryStore(), env: {}, allowPrivateNetworks: true, resolve },
+    );
+    const result = await client.fetch(`http://127.0.0.1:${server.port}/paper.pdf`);
+
+    expect(result).toMatchObject({
+      success: true,
+      provider: "reader",
+      attempts: [expect.stringContaining("direct: can't read application/pdf locally")],
+      data: { content: "extracted pdf text content" },
+    });
+    expect(reader.calls).toHaveLength(1);
+  } finally {
+    server.stop(true);
+  }
+});
+
+test("local direct fetch alone fails when encountering a PDF", async () => {
+  const server = Bun.serve({
+    port: 0,
+    fetch: () =>
+      new Response("%PDF-1.4 binary data", {
+        headers: { "content-type": "application/pdf" },
+      }),
+  });
+  try {
+    const resolve = async () => [{ address: "93.184.216.34", family: 4 }];
+    const result = await createFetch(
+      { direct: fetchers.direct },
+      { store: memoryStore(), env: {}, allowPrivateNetworks: true, resolve },
+    ).fetch(`http://127.0.0.1:${server.port}/file.pdf`);
+
+    expect(result).toMatchObject({
+      success: false,
+      error: expect.stringContaining("can't read application/pdf locally"),
+    });
+  } finally {
+    server.stop(true);
+  }
+});
+
+test("rejects reader responses that report HTTP 403 or 429 status codes", () => {
+  expect(() =>
+    pageFromJina(JSON.stringify({ data: { url: "https://a.com", content: "Access Denied", httpStatus: 403 } })),
+  ).toThrow(TargetError);
+  expect(() =>
+    pageFromJina(JSON.stringify({ data: { url: "https://a.com", content: "Rate limited", httpStatus: 429 } })),
+  ).toThrow(TargetError);
+  expect(() =>
+    pageFromFirecrawl(
+      JSON.stringify({ data: { markdown: "Forbidden", metadata: { statusCode: 403 } } }),
+      "https://a.com",
+      "markdown",
+    ),
+  ).toThrow(TargetError);
+});
+
+test("rejects Cloudflare refusal and challenge pages due to insufficient content", async () => {
+  const challenge = `<!DOCTYPE html><html><head><title>Just a moment...</title></head><body>
+  <div class="main-wrapper"><span class="cf-error-title">Enable JavaScript and cookies to continue</span></div>
+  </body></html>`;
+  await expect(pageFromHtml(challenge, "https://cf.example", "markdown")).rejects.toThrow("too little content");
+});
+
+test("rejects empty page content returned by a fetcher", async () => {
+  const emptyReader = fetcher(page(""));
+  const result = await setup({ emptyReader }).fetch("https://a.com");
+  expect(result).toMatchObject({
+    success: false,
+    error: expect.stringContaining("empty page"),
+  });
+});
+
+test("blocks multi-hop manual redirect before following to a private address", async () => {
+  let privateAccessed = 0;
+  const privateTarget = Bun.serve({ port: 0, fetch: () => new Response(String(++privateAccessed)) });
+  const hop2 = Bun.serve({
+    port: 0,
+    fetch: () => Response.redirect(`http://127.0.0.1:${privateTarget.port}/leak`),
+  });
+  const hop1 = Bun.serve({
+    port: 0,
+    fetch: () => Response.redirect(`http://localhost:${hop2.port}/step2`),
+  });
+  try {
+    const resolve = async (hostname: string) => [
+      { address: hostname === "127.0.0.1" ? "127.0.0.1" : "93.184.216.34", family: 4 },
+    ];
+    const result = await createFetch(
+      { direct: fetchers.direct },
+      { store: memoryStore(), env: {}, resolve },
+    ).fetch(`http://localhost:${hop1.port}`);
+
+    expect(result).toMatchObject({ success: false, error: expect.stringContaining("private") });
+    expect(privateAccessed).toBe(0);
+  } finally {
+    hop1.stop(true);
+    hop2.stop(true);
+    privateTarget.stop(true);
+  }
+});
+
+test("stops and rejects when manual redirect loop exceeds limit", async () => {
+  let port = 0;
+  const loop = Bun.serve({
+    port: 0,
+    fetch: (req) => {
+      const url = new URL(req.url);
+      const step = Number(url.searchParams.get("step") ?? "0");
+      return Response.redirect(`http://localhost:${port}/redirect?step=${step + 1}`);
+    },
+  });
+  port = loop.port ?? 0;
+  try {
+    const resolve = async () => [{ address: "93.184.216.34", family: 4 }];
+    const result = await createFetch(
+      { direct: fetchers.direct },
+      { store: memoryStore(), env: {}, allowPrivateNetworks: true, resolve },
+    ).fetch(`http://localhost:${loop.port}/redirect`);
+
+    expect(result).toMatchObject({ success: false, error: expect.stringContaining("too many redirects") });
+  } finally {
+    loop.stop(true);
+  }
+});
+
+test("allows following manual redirects to internal endpoints when allowPrivateNetworks is true", async () => {
+  const destination = Bun.serve({
+    port: 0,
+    fetch: () =>
+      new Response(
+        `<html><head><title>Internal Doc</title></head><body><article><p>${"Internal article text. ".repeat(25)}</p></article></body></html>`,
+        { headers: { "content-type": "text/html" } },
+      ),
+  });
+  const gateway = Bun.serve({
+    port: 0,
+    fetch: () => Response.redirect(`http://127.0.0.1:${destination.port}/doc`),
+  });
+  try {
+    const resolve = async () => [{ address: "127.0.0.1", family: 4 }];
+    const result = await createFetch(
+      { direct: fetchers.direct },
+      { store: memoryStore(), env: {}, allowPrivateNetworks: true, resolve },
+    ).fetch(`http://localhost:${gateway.port}/start`);
+
+    expect(result).toMatchObject({
+      success: true,
+      provider: "direct",
+      data: {
+        url: `http://127.0.0.1:${destination.port}/doc`,
+        title: "Internal Doc",
+      },
+    });
+  } finally {
+    gateway.stop(true);
+    destination.stop(true);
+  }
+});
+
+test("direct fetch rejects unsupported binary content types like images and octet-streams", async () => {
+  const binaryServer = Bun.serve({
+    port: 0,
+    fetch: () =>
+      new Response(new Uint8Array([0x00, 0x01, 0x02, 0x03]), {
+        headers: { "content-type": "application/octet-stream" },
+      }),
+  });
+  try {
+    const resolve = async () => [{ address: "93.184.216.34", family: 4 }];
+    const result = await createFetch(
+      { direct: fetchers.direct },
+      { store: memoryStore(), env: {}, allowPrivateNetworks: true, resolve },
+    ).fetch(`http://127.0.0.1:${binaryServer.port}/data.bin`);
+
+    expect(result).toMatchObject({
+      success: false,
+      error: expect.stringContaining("can't read application/octet-stream locally"),
+    });
+  } finally {
+    binaryServer.stop(true);
+  }
+});
+
+test("marks truncated as false when content length fits within maxCharacters", async () => {
+  const result = await setup({ reader: fetcher(page("short body content")) }).fetch("https://a.com", {
+    maxCharacters: 500,
+  });
+  expect(result).toMatchObject({
+    success: true,
+    data: {
+      content: "short body content",
+      truncated: false,
+    },
+  });
+});
+
+test("produces clean public page data with trimmed content and correct shape", async () => {
+  const messyPage = fetcher({
+    url: "https://clean.example/page",
+    title: "Clean Public Title",
+    content: "   \n\n# Markdown title\n\nContent paragraph.\n   ",
+    publishedAt: "2026-04-01",
+  });
+  const result = await setup({ messyPage }).fetch("https://clean.example/page", { format: "markdown" });
+
+  expect(result).toEqual({
+    success: true,
+    provider: "messyPage",
+    attempts: [],
+    data: {
+      url: "https://clean.example/page",
+      title: "Clean Public Title",
+      content: "# Markdown title\n\nContent paragraph.",
+      publishedAt: "2026-04-01",
+      format: "markdown",
+      truncated: false,
+    },
+  });
+});
+
+test("normalizes published date formats and rejects invalid dates in pageFromHtml", async () => {
+  const htmlWithDate = `<html><head><title>Blog</title>
+  <meta property="article:published_time" content="2026-05-10T14:30:00.000Z" />
+  </head><body><article><p>${"Blog content sentence here. ".repeat(25)}</p></article></body></html>`;
+  const result = await pageFromHtml(htmlWithDate, "https://blog.example/post", "markdown");
+  expect(result.publishedAt).toBe("2026-05-10");
 });
