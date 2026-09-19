@@ -189,6 +189,7 @@ export function createRouter<R extends Record<string, Routable>>(
         id,
         kind: get(id).kind,
         ready: isReady(id),
+        key: get(id).env,
         needs: isReady(id) ? undefined : get(id).env,
         coolingDownSeconds: Math.max(0, Math.ceil(((state.benched[stateKey(id)] ?? 0) - now()) / 1000)),
         successRate: health ? Math.round(health.success * 100) / 100 : null,

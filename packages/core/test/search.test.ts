@@ -170,10 +170,11 @@ describe("router", () => {
 
   test("keyed providers only join when their env var is set", async () => {
     const registry = { keyed: fake([item("https://k.com")], "KEY"), free: fake([item("https://f.com")]) };
-    const { search } = setup(registry);
+    const { search, status } = setup(registry);
     await search("q");
     await search("q");
     expect(registry.keyed.calls).toHaveLength(0);
+    expect(status()[0]).toMatchObject({ id: "keyed", key: "KEY", needs: "KEY" });
   });
 
   test("returns success false when every provider fails or finds nothing", async () => {
