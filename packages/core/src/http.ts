@@ -10,6 +10,9 @@ export class HttpError extends Error {
   }
 }
 
+/** The request never got a response: DNS, connect, TLS, or reset. Safe to retry. */
+export class NetworkError extends Error {}
+
 export type Json = string | number | boolean | null | Json[] | { [key: string]: Json };
 
 type HttpResponse = Pick<Response, "ok" | "status" | "headers" | "text">;
@@ -48,8 +51,17 @@ function parseRetryAfter(res: HttpResponse, body: string): number | undefined {
   return match ? Number(match[1]) : undefined;
 }
 
-export async function request(url: string, { browser, ...init }: RequestOptions): Promise<HttpResponse> {
-  const res: HttpResponse = browser ? await browserClient().fetch(url, init) : await fetch(url, init);
+async function send(url: string, { browser, ...init }: RequestOptions): Promise<HttpResponse> {
+  try {
+    return browser ? await browserClient().fetch(url, init) : await fetch(url, init);
+  } catch (err) {
+    if (init.signal.aborted) throw err;
+    throw new NetworkError(err instanceof Error ? err.message : String(err), { cause: err });
+  }
+}
+
+export async function request(url: string, options: RequestOptions): Promise<HttpResponse> {
+  const res = await send(url, options);
   if (res.ok) return res;
   const body = await res.text();
   throw new HttpError(res.status, parseRetryAfter(res, body), `HTTP ${res.status}: ${body.slice(0, 200)}`);

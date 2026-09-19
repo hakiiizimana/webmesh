@@ -304,7 +304,7 @@ function youtubeSupports(filters: SearchFilters): boolean {
   );
 }
 
-/** Key order = rotation order. `env` means the provider joins only when that var is set. */
+/** `env` means the provider joins only when that var is set, and is tried only after the free ones. */
 export const providers = {
   "parallel-mcp": {
     kind: "mcp",

@@ -15,6 +15,7 @@ import { z } from "zod";
 
 const searcher = createSearch(providers, { store: fileStore() });
 
+const limitSchema = z.number().int().min(1).max(20);
 const date = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Expected YYYY-MM-DD.");
 const filtersSchema = z.object({
   freshness: z.union([z.enum(["day", "week", "month", "year"]), z.object({ from: date, to: date.optional() })]).optional(),
@@ -83,11 +84,13 @@ async function runSearch(
   { limit, only, filters }: { limit?: string; only?: string; filters?: SearchFilters } = {},
 ): Promise<SearchResult> {
   if (!query) return { success: false, error: "Missing query." };
+  const parsedLimit = limit === undefined ? undefined : limitSchema.safeParse(Number(limit));
+  if (parsedLimit && !parsedLimit.success) return { success: false, error: "Limit must be a whole number from 1 to 20." };
   const requested = only?.split(",").map((id) => id.trim());
   const unknown = requested?.filter((id) => !isProviderId(id));
   if (unknown?.length) return { success: false, error: `Unknown provider(s): ${unknown.join(", ")}.` };
   return searcher.search(query, {
-    limit: limit ? Number(limit) : undefined,
+    limit: parsedLimit?.data,
     only: requested?.filter(isProviderId),
     filters,
   });
@@ -101,10 +104,11 @@ async function serveMcp() {
       title: "Web search",
       description:
         "Search the web. Returns JSON: { success, data: [{ title, url, description }] }. " +
-        "Rotates across free search providers and falls back automatically when one fails.",
+        "Routes to the most reliable free search providers, falls back when one fails or is slow, " +
+        "and uses keyed providers only when free ones can't answer.",
       inputSchema: {
         query: z.string().min(1).describe("What to search for."),
-        limit: z.number().int().min(1).max(20).optional().describe("Max results (default 10)."),
+        limit: limitSchema.optional().describe("Max results (default 10)."),
         providers: z.array(z.string()).optional().describe("Only use these provider IDs."),
         filters: filtersSchema.optional().describe("Provider-neutral search filters."),
       },

@@ -3,16 +3,20 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { z } from "zod";
 
-const rotationState = z.object({
-  last: z.string().optional(),
+/** Moving averages per provider: share of searches that returned results, and time to answer. */
+const health = z.object({ success: z.number(), latencyMs: z.number() });
+
+const routingState = z.object({
   benched: z.record(z.string(), z.number()).default({}),
+  health: z.record(z.string(), health).default({}),
 });
 
-export type RotationState = z.infer<typeof rotationState>;
+export type ProviderHealth = z.infer<typeof health>;
+export type RoutingState = z.infer<typeof routingState>;
 
 export type StateStore = {
-  load: () => RotationState;
-  save: (state: RotationState) => void;
+  load: () => RoutingState;
+  save: (state: RoutingState) => void;
 };
 
 const defaultPath = () => join(process.env.XDG_CACHE_HOME ?? join(homedir(), ".cache"), "webmesh", "state.json");
@@ -21,9 +25,9 @@ export function fileStore(path = defaultPath()): StateStore {
   return {
     load() {
       try {
-        return rotationState.parse(JSON.parse(readFileSync(path, "utf8")));
+        return routingState.parse(JSON.parse(readFileSync(path, "utf8")));
       } catch {
-        return { benched: {} };
+        return { benched: {}, health: {} };
       }
     },
     save(state) {
@@ -34,7 +38,7 @@ export function fileStore(path = defaultPath()): StateStore {
 }
 
 export function memoryStore(): StateStore {
-  let state: RotationState = { benched: {} };
+  let state: RoutingState = { benched: {}, health: {} };
   return {
     load: () => structuredClone(state),
     save: (next) => {

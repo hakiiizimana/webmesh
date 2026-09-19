@@ -1,13 +1,20 @@
 import { z } from "zod";
 import { providers as specs, type ProviderId, type ProviderSpec } from "./config";
 import { SoftBlockError } from "./html";
-import { HttpError, type Json, request } from "./http";
+import { HttpError, type Json, NetworkError, request } from "./http";
 import { parse } from "./parser";
-import type { StateStore } from "./state";
-import type { Provider, SearchContext, SearchItem, SearchResult } from "./types";
+import type { ProviderHealth, RoutingState, StateStore } from "./state";
+import type { Provider, SearchContext, SearchFilters, SearchItem, SearchResult } from "./types";
 
 const BLOCKED_MS = 10 * 60_000;
 const TRANSIENT_MS = 30_000;
+const BUDGET_MS = 15_000;
+const HEDGE_MS = 2_500;
+const RETRY_DELAY_MS = 400;
+/** Weight of the newest sample in each provider's moving averages. */
+const HEALTH_ALPHA = 0.3;
+/** Providers with no history start healthy so they get a fair first try. */
+const NEW_PROVIDER: ProviderHealth = { success: 1, latencyMs: 1_500 };
 const CACHE_DEFAULT_TTL_MS = 20 * 60_000;
 const CACHE_WEEK_TTL_MS = 60 * 60_000;
 const CACHE_LONG_TTL_MS = 24 * 60 * 60_000;
@@ -112,9 +119,65 @@ export const providers = {
 type SearchOptions = {
   store: StateStore;
   env?: Record<string, string | undefined>;
-  timeoutMs?: number;
+  /** Total time one search may take across every provider it tries. */
+  budgetMs?: number;
+  /** How long a provider may run before the next one starts alongside it. */
+  hedgeMs?: number;
+  /** Base pause before the single retry on a network error or 5xx; jittered up to double. */
+  retryDelayMs?: number;
   now?: () => number;
+  random?: () => number;
 };
+
+/** Drops filter values every provider already uses by default, so they don't rule providers out. */
+function withoutDefaults(filters: SearchFilters): SearchFilters {
+  const normalized = { ...filters };
+  if (normalized.type === "web") delete normalized.type;
+  if (normalized.searchDepth === "fast") delete normalized.searchDepth;
+  return normalized;
+}
+
+/** Resolves after `ms`, or as soon as `signal` aborts. */
+function pause(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    const done = () => {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", done);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    signal.addEventListener("abort", done, { once: true });
+  });
+}
+
+/** Runs `call`, and once more after `delayMs` if it failed on the network or with a 5xx. */
+async function withRetry<T>(call: () => Promise<T>, delayMs: number, signal: AbortSignal): Promise<T> {
+  try {
+    return await call();
+  } catch (err) {
+    const retryable = err instanceof NetworkError || (err instanceof HttpError && err.status >= 500);
+    if (!retryable || signal.aborted) throw err;
+    await pause(delayMs, signal);
+    if (signal.aborted) throw err;
+    return call();
+  }
+}
+
+const blend = (average: number, sample: number) => average + HEALTH_ALPHA * (sample - average);
+
+/** Folds one observation into a provider's moving averages. */
+function observe(health: RoutingState["health"], id: string, sample: Partial<ProviderHealth>): void {
+  const current = health[id] ?? NEW_PROVIDER;
+  health[id] = {
+    success: sample.success === undefined ? current.success : blend(current.success, sample.success),
+    latencyMs: sample.latencyMs === undefined ? current.latencyMs : blend(current.latencyMs, sample.latencyMs),
+  };
+}
+
+/** Reliability counts more than speed; the floor lets a struggling provider still earn its way back. */
+function weight({ success, latencyMs }: ProviderHealth): number {
+  return Math.max(success, 0.2) ** 2 * (1_000 / Math.max(latencyMs, 250));
+}
 
 function httpCooldown(err: HttpError): number {
   if (err.status === 429) return (err.retryAfter ?? 60) * 1000;
@@ -187,12 +250,21 @@ function copyResult(result: SuccessfulSearch): SuccessfulSearch {
   return { success: true, data: result.data.map((item) => ({ ...item })) };
 }
 
+/**
+ * Builds the router over a provider registry. Each search tries free providers before keyed ones,
+ * favoring those that answer often and fast, starts the next provider alongside a slow one, and
+ * gives up once the time budget is spent.
+ */
 export function createSearch<R extends Record<string, Provider>>(registry: R, options: SearchOptions) {
   type Id = keyof R & string;
+  type Outcome = { id: Id; items: SearchItem[] } | { id: Id; failure: string };
   const ids = Object.keys(registry).filter((id): id is Id => Object.hasOwn(registry, id));
   const env = options.env ?? process.env;
-  const timeoutMs = options.timeoutMs ?? 10_000;
+  const budgetMs = options.budgetMs ?? BUDGET_MS;
+  const hedgeMs = options.hedgeMs ?? HEDGE_MS;
+  const retryDelayMs = options.retryDelayMs ?? RETRY_DELAY_MS;
   const now = options.now ?? Date.now;
+  const random = options.random ?? Math.random;
   const get = (id: Id): Provider => {
     const provider = registry[id];
     if (!provider) throw new Error(`unknown provider ${String(id)}`);
@@ -228,10 +300,53 @@ export function createSearch<R extends Record<string, Provider>>(registry: R, op
   };
   const isReady = (id: Id) => !get(id).env || keyFor(id) !== "";
 
+  /** Free providers first, keyed ones as a fallback; within a tier, a shuffle weighted by health. */
+  const rank = (candidates: Id[], health: RoutingState["health"]): Id[] =>
+    candidates
+      .map((id) => ({
+        id,
+        tier: get(id).env ? 1 : 0,
+        key: Math.log(1 - random()) / weight(health[id] ?? NEW_PROVIDER),
+      }))
+      .sort((a, b) => a.tier - b.tier || b.key - a.key)
+      .map(({ id }) => id);
+
+  /** One provider's turn. Records its health and cooldown unless the search was already settled. */
+  async function attempt(
+    id: Id,
+    query: string,
+    context: SearchContext,
+    state: RoutingState,
+  ): Promise<Outcome> {
+    const startedAt = performance.now();
+    try {
+      const found = await withRetry(
+        () => get(id).search(query, context),
+        retryDelayMs * (1 + random()),
+        context.signal,
+      );
+      if (context.signal.aborted) return { id, failure: "cancelled" };
+      const items = found.filter((item) => item.url).map(tidy).slice(0, context.limit);
+      if (items.length === 0) {
+        observe(state.health, id, { success: 0 });
+        return { id, failure: "no results" };
+      }
+      observe(state.health, id, { success: 1, latencyMs: performance.now() - startedAt });
+      return { id, items };
+    } catch (err) {
+      if (context.signal.aborted) return { id, failure: "cancelled" };
+      observe(state.health, id, { success: 0 });
+      const ms = err instanceof HttpError ? httpCooldown(err) : err instanceof SoftBlockError ? BLOCKED_MS : TRANSIENT_MS;
+      if (ms > 0) state.benched[id] = now() + ms;
+      return { id, failure: (err instanceof Error ? err.message : String(err)).split("\n")[0]?.slice(0, 120) ?? "" };
+    }
+  }
+
   async function search(
     query: string,
-    { limit = 10, only, filters = {} }: { limit?: number; only?: Id[]; filters?: SearchContext["filters"] } = {},
+    { limit = 10, only, filters: requested = {} }: { limit?: number; only?: Id[]; filters?: SearchFilters } = {},
   ): Promise<SearchResult> {
+    const filters = withoutDefaults(requested);
     const configured = (only ?? ids).filter(isReady);
     const ready = configured.filter((id) => get(id).supports?.(filters) ?? true);
     if (ready.length === 0) {
@@ -246,40 +361,58 @@ export function createSearch<R extends Record<string, Provider>>(registry: R, op
     if (cached) return cached;
 
     const state = options.store.load();
-    const start = (ready.findIndex((id) => id === state.last) + 1) % ready.length;
-    const failures: string[] = [];
+    const cooling = ready.filter((id) => (state.benched[id] ?? 0) > now());
+    const failures = cooling.map((id) => `${id}: cooling down`);
+    const queue = rank(ready.filter((id) => !cooling.includes(id)), state.health);
 
-    for (let step = 0; step < ready.length; step++) {
-      const id = ready[(start + step) % ready.length];
-      if (id === undefined) continue;
-      if ((state.benched[id] ?? 0) > now()) {
-        failures.push(`${id}: cooling down`);
-        continue;
-      }
-      try {
-        const signal = AbortSignal.timeout(timeoutMs);
-        const items = (await get(id).search(query, { limit, signal, key: keyFor(id), filters }))
-          .filter((item) => item.url)
-          .map(tidy)
-          .slice(0, limit);
-        if (items.length > 0) {
-          state.last = id;
-          options.store.save(state);
-          const result: SuccessfulSearch = { success: true, data: items };
+    const stop = new AbortController();
+    const budget = setTimeout(() => stop.abort(), budgetMs);
+    const expired = new Promise<"expired">((resolve) =>
+      stop.signal.addEventListener("abort", () => resolve("expired"), { once: true }),
+    );
+    const running = new Map<Id, { startedAt: number; outcome: Promise<Outcome> }>();
+    const launch = () => {
+      const id = queue.shift();
+      if (id === undefined || stop.signal.aborted) return;
+      const context = { limit, signal: stop.signal, key: keyFor(id), filters };
+      running.set(id, { startedAt: performance.now(), outcome: attempt(id, query, context, state) });
+    };
+
+    try {
+      launch();
+      while (running.size > 0) {
+        const hedge = new AbortController();
+        const next = await Promise.race([
+          expired,
+          pause(hedgeMs, hedge.signal).then(() => "hedge" as const),
+          ...[...running.values()].map((run) => run.outcome),
+        ]);
+        hedge.abort();
+        if (next === "expired") {
+          failures.push(...[...running.keys()].map((id) => `${id}: timed out`));
+          break;
+        }
+        if (next === "hedge") {
+          launch();
+          continue;
+        }
+        running.delete(next.id);
+        if ("items" in next) {
+          const result: SuccessfulSearch = { success: true, data: next.items };
           writeCache(key, result, filters);
           return result;
         }
-        failures.push(`${id}: no results`);
-      } catch (err) {
-        const ms = err instanceof HttpError ? httpCooldown(err) : err instanceof SoftBlockError ? BLOCKED_MS : TRANSIENT_MS;
-        if (ms > 0) state.benched[id] = now() + ms;
-        failures.push(`${id}: ${(err instanceof Error ? err.message : String(err)).split("\n")[0]?.slice(0, 120)}`);
+        failures.push(`${next.id}: ${next.failure}`);
+        launch();
       }
+      return { success: false, error: `All providers failed. ${failures.join("; ")}` };
+    } finally {
+      clearTimeout(budget);
+      // Providers still running lost the race; their elapsed time still counts against their speed.
+      for (const [id, run] of running) observe(state.health, id, { latencyMs: performance.now() - run.startedAt });
+      stop.abort();
+      options.store.save(state);
     }
-
-    state.last = ready[start];
-    options.store.save(state);
-    return { success: false, error: `All providers failed. ${failures.join("; ")}` };
   }
 
   function status() {
