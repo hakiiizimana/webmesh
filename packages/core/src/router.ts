@@ -10,7 +10,7 @@ const RETRY_DELAY_MS = 400;
 // The provider worked but the page failed (404, 403, ...): no cooldown, no health penalty.
 export class TargetError extends Error {}
 
-export type Routable = { kind: ProviderKind; env?: string };
+export type Routable = { kind: ProviderKind; env?: string; available?: () => boolean };
 
 export type RouterOptions = {
   store: StateStore;
@@ -66,7 +66,7 @@ function httpCooldown(err: HttpError): number {
   return 0;
 }
 
-const tier = ({ kind, env }: Routable) => (kind === "local" ? 0 : env ? 2 : 1);
+const tier = ({ kind, env }: Routable) => (kind === "local" ? 0 : kind === "browser" ? 1 : env ? 3 : 2);
 
 export function createRouter<R extends Record<string, Routable>>(
   operation: string,
@@ -95,7 +95,7 @@ export function createRouter<R extends Record<string, Routable>>(
     const name = get(id).env;
     return name ? (env[name] ?? "") : "";
   };
-  const isReady = (id: Id) => !get(id).env || keyFor(id) !== "";
+  const isReady = (id: Id) => (!get(id).env || keyFor(id) !== "") && (get(id).available?.() ?? true);
 
   const rank = (candidates: Id[], state: RoutingState): Id[] =>
     candidates
@@ -124,8 +124,9 @@ export function createRouter<R extends Record<string, Routable>>(
       if (err instanceof TargetError) return { id, failure };
       store.observe(stateKey(id), { success: 0 });
       const ms = err instanceof HttpError ? httpCooldown(err) : err instanceof SoftBlockError ? BLOCKED_MS : TRANSIENT_MS;
-      // A local provider's errors come from the page, not the provider.
-      if (ms > 0 && get(id).kind !== "local") store.bench(stateKey(id), now() + ms);
+      // Errors on this machine come from the page, not the provider.
+      const onMachine = get(id).kind === "local" || get(id).kind === "browser";
+      if (ms > 0 && !onMachine) store.bench(stateKey(id), now() + ms);
       return { id, failure };
     }
   }

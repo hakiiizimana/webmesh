@@ -68,6 +68,22 @@ test("falls back to a reader when the local fetch fails, and never cools the loc
   expect(registry.direct.calls).toHaveLength(2);
 });
 
+test("tries the local fetch, then the browser, then remote readers, and skips a browser that isn't installed", async () => {
+  const registry = {
+    reader: fetcher(page("from reader")),
+    browser: fetcher(page("rendered"), "browser"),
+    direct: fetcher(new Error("too little content"), "local"),
+  };
+  const missing = { ...fetcher(page("rendered"), "browser"), available: () => false };
+
+  const rendered = await setup(registry).fetch("https://app.example");
+  const skipped = await setup({ reader: registry.reader, missing }).fetch("https://app.example");
+
+  expect(rendered).toMatchObject({ success: true, provider: "browser", attempts: ["direct: too little content"] });
+  expect(skipped).toMatchObject({ success: true, provider: "reader" });
+  expect(missing.calls).toHaveLength(0);
+});
+
 test("a failed page does not cool the reader down", async () => {
   const reader = fetcher(new TargetError("page returned HTTP 404"));
   const { fetch } = setup({ reader });

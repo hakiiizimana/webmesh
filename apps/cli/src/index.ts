@@ -2,7 +2,10 @@
 import { parseArgs } from "node:util";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import {
+  agentBrowserPath,
+  createBrowser,
   createFetch,
   createSearch,
   fetchers,
@@ -25,6 +28,9 @@ const limitSchema = z.number().int().min(1).max(20);
 const pageUrl = z.url({ protocol: /^https?$/ });
 const formatSchema = z.enum(["markdown", "html"]);
 const maxCharactersSchema = z.number().int().min(1_000).max(1_000_000);
+const screenshot = z.object({ path: z.string().regex(/\.(png|jpe?g|webp)$/i) });
+const IMAGE_TYPES = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", webp: "image/webp" } as const;
+const isImageType = (ext: string): ext is keyof typeof IMAGE_TYPES => Object.hasOwn(IMAGE_TYPES, ext);
 const date = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Expected YYYY-MM-DD.");
 const filtersSchema = z.object({
   freshness: z.union([z.enum(["day", "week", "month", "year"]), z.object({ from: date, to: date.optional() })]).optional(),
@@ -178,6 +184,42 @@ async function serveMcp() {
       return { content: [{ type: "text", text: JSON.stringify(result) }], isError: !result.success };
     },
   );
+  const browser = createBrowser(`webmesh-mcp-${process.pid}`);
+  if (agentBrowserPath()) {
+    server.registerTool(
+      "browser",
+      {
+        title: "Browser",
+        description:
+          "Drive a real Chrome browser: open pages, click, type, read, and take screenshots. Pass one agent-browser command as args. " +
+          'Loop: ["open", url], then ["snapshot", "-i"] to list interactive elements as @e1, @e2, then ["click", "@e2"], ' +
+          '["fill", "@e3", "text"], or ["press", "Enter"]. Run ["snapshot", "-i"] again after the page changes; refs go stale. ' +
+          'Also ["screenshot"], ["get", "text", "@e1"], ["read"], ["tab", "list"], ["back"]. ["skills", "get", "core"] returns the full guide. ' +
+          "The session belongs to this server and closes when it exits. Returns JSON: { success, data } or { success, error }.",
+        inputSchema: {
+          args: z.array(z.string()).min(1).describe('One agent-browser command, e.g. ["click", "@e2"].'),
+        },
+      },
+      async ({ args }) => {
+        const result = await browser.run(args);
+        const content: CallToolResult["content"] = [{ type: "text", text: JSON.stringify(result) }];
+        const shot = screenshot.safeParse(result.success ? result.data : null);
+        const ext = shot.success ? (shot.data.path.split(".").pop() ?? "").toLowerCase() : "";
+        if (shot.success && isImageType(ext)) {
+          const data = Buffer.from(await Bun.file(shot.data.path).arrayBuffer()).toString("base64");
+          content.push({ type: "image", data, mimeType: IMAGE_TYPES[ext] });
+        }
+        return { content, isError: !result.success };
+      },
+    );
+  }
+  const shutdown = async () => {
+    await browser.close();
+    process.exit(0);
+  };
+  process.stdin.on("end", shutdown);
+  process.on("SIGINT", shutdown);
+  process.on("SIGTERM", shutdown);
   await server.connect(new StdioServerTransport());
 }
 
@@ -197,8 +239,21 @@ webmesh fetch <url>        fetch a page as markdown or HTML (JSON)
       --format <markdown|html>
       --max-characters <n>   cut content at n characters (default 50000)
   -p, --providers <a,b>      only use these fetchers
+webmesh browser <command>    drive Chrome with agent-browser, e.g. open <url>, snapshot -i, click @e2
 webmesh providers            list search and fetch providers with cooldowns and health (JSON)
 webmesh mcp                  run the MCP server over stdio`;
+
+if (process.argv[2] === "browser") {
+  const bin = agentBrowserPath();
+  if (!bin) {
+    console.error("agent-browser is not installed.");
+    process.exit(1);
+  }
+  const args = process.argv.slice(3);
+  const session = args.some((arg) => arg === "--session" || arg.startsWith("--session=")) ? [] : ["--session", "webmesh"];
+  const proc = Bun.spawn([process.execPath, bin, ...session, ...args], { stdio: ["inherit", "inherit", "inherit"] });
+  process.exit(await proc.exited);
+}
 
 const { values, positionals } = parseArgs({
   allowPositionals: true,

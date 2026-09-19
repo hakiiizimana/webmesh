@@ -1,5 +1,6 @@
 import { Defuddle } from "defuddle/node";
 import { z } from "zod";
+import { agentBrowserPath, createBrowser } from "./browser";
 import { clean } from "./html";
 import { request } from "./http";
 import { callMcp } from "./mcp";
@@ -21,6 +22,7 @@ export type FetchContext = { format: PageFormat; maxCharacters: number; signal: 
 export type Fetcher = {
   kind: ProviderKind;
   env?: string;
+  available?: () => boolean;
   formats: readonly PageFormat[];
   fetch: (url: string, context: FetchContext) => Promise<FetchedPage>;
 };
@@ -55,6 +57,26 @@ async function fetchDirect(url: string, { format, signal }: FetchContext): Promi
   if (type.includes("html")) return pageFromHtml(body, url, format);
   if (type.startsWith("text/") || type.includes("json")) return { url, title: url, content: body };
   throw new Error(`can't read ${type || "this content type"} locally`);
+}
+
+const openedPage = z.object({ title: z.string().optional(), url: z.string().optional() });
+const readPage = z.object({ content: z.string(), status: z.number().nullish() });
+
+async function fetchInBrowser(url: string, { signal }: FetchContext): Promise<FetchedPage> {
+  const browser = createBrowser(`webmesh-fetch-${crypto.randomUUID().slice(0, 8)}`);
+  try {
+    const opened = await browser.run(["open", url], signal);
+    if (!opened.success) throw new Error(opened.error);
+    const read = await browser.run(["read"], signal);
+    if (!read.success) throw new Error(read.error);
+    const page = readPage.parse(read.data);
+    assertPageStatus(page.status);
+    if (page.content.split(/\s+/).length < MIN_WORDS) throw new Error("too little content after rendering");
+    const meta = openedPage.parse(opened.data);
+    return { url: meta.url ?? url, title: meta.title || url, content: page.content };
+  } finally {
+    await browser.close();
+  }
 }
 
 const jinaResponse = z.object({
@@ -161,6 +183,7 @@ async function fetchParallelMcp(url: string, { signal }: FetchContext): Promise<
 
 export const fetchers = {
   direct: { kind: "local", formats: ["markdown", "html"], fetch: fetchDirect },
+  browser: { kind: "browser", available: () => agentBrowserPath() !== null, formats: ["markdown"], fetch: fetchInBrowser },
   "jina-reader": { kind: "public", formats: ["markdown", "html"], fetch: fetchJina },
   "firecrawl-free": { kind: "public", formats: ["markdown", "html"], fetch: fetchFirecrawl },
   "exa-mcp": { kind: "mcp", formats: ["markdown"], fetch: fetchExaMcp },

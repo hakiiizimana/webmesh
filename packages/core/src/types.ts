@@ -45,7 +45,7 @@ export type SearchContext = {
   filters: SearchFilters;
 };
 
-export type ProviderKind = "api" | "mcp" | "public" | "scrape" | "local";
+export type ProviderKind = "api" | "mcp" | "public" | "scrape" | "local" | "browser";
 
 export type Provider = {
   kind: ProviderKind;
