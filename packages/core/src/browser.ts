@@ -3,6 +3,19 @@ import { z } from "zod";
 
 const TIMEOUT_MS = 60_000;
 const MAX_FIELD = 30_000;
+export const LOGIN_STATE = "webmesh";
+
+const SECRET_KEY = /pass(word|wd)?|secret|token|authorization|cookie|api[-_]?key|jwt|credential|bearer/i;
+const SECRET_PARAM = /([?&#](?:access_token|id_token|refresh_token|token|api_key|apikey|key|secret|client_secret|password|sig|signature)=)[^&#\s"']+/gi;
+const SECRET_VALUES = [
+  /\beyJ[\w-]{10,}\.[\w-]{10,}\.[\w-]{10,}/g,
+  /\b(?:sk|pk|rk)-[A-Za-z0-9_-]{16,}/g,
+  /\bgh[pousr]_[A-Za-z0-9]{20,}/g,
+  /\bxox[abprs]-[A-Za-z0-9-]{10,}/g,
+  /\bAKIA[0-9A-Z]{16}\b/g,
+  /\bBearer\s+[A-Za-z0-9._~+/-]+=*/gi,
+];
+const REDACTED = "[redacted]";
 
 const browserData = z.record(z.string(), z.json());
 const output = z.object({ success: z.boolean(), data: browserData.nullish(), error: z.string().nullish() });
@@ -31,6 +44,24 @@ function hint(error: string): string {
   return error;
 }
 
+type JsonValue = BrowserData[string];
+
+function redactText(text: string): string {
+  return SECRET_VALUES.reduce((out, pattern) => out.replace(pattern, REDACTED), text.replace(SECRET_PARAM, `$1${REDACTED}`));
+}
+
+export function redact(value: JsonValue, key = ""): JsonValue {
+  if (Array.isArray(value)) return value.map((item) => redact(item, key));
+  if (value !== null && value instanceof Object) {
+    const isCookie = Object.hasOwn(value, "name") && Object.hasOwn(value, "value") && Object.hasOwn(value, "domain");
+    return Object.fromEntries(
+      Object.entries(value).map(([name, inner]) => [name, isCookie && name === "value" ? REDACTED : redact(inner, name)]),
+    );
+  }
+  if (SECRET_KEY.test(key) && value !== null && value !== "" && value !== false) return REDACTED;
+  return z.string().safeParse(value).success ? redactText(String(value)) : value;
+}
+
 function trim(data: BrowserData): BrowserData {
   const { lifecycle: _lifecycle, ...rest } = data;
   if (Object.hasOwn(rest, "snapshot")) delete rest.refs;
@@ -52,8 +83,11 @@ export function parseOutput(stdout: string, stderr: string, exitCode: number): B
   return { success: false, error: hint((stderr || stdout).trim().split("\n")[0] ?? `agent-browser exited with ${exitCode}`) };
 }
 
-export function createBrowser(session: string) {
+type BrowserOptions = { restore?: string; redact?: boolean };
+
+export function createBrowser(session: string, { restore, redact: hide = false }: BrowserOptions = {}) {
   let used = false;
+  const launch = restore ? ["--restore", restore, "--restore-save", "never"] : [];
   let queue: Promise<BrowserResult | undefined> = Promise.resolve(undefined);
 
   // One page, one command at a time: parallel tool calls would race each other.
@@ -70,7 +104,7 @@ export function createBrowser(session: string) {
       return { success: false, error: "webmesh manages the browser session; drop --session." };
     }
     used = true;
-    const proc = Bun.spawn([process.execPath, bin, "--json", "--session", session, ...args.filter((arg) => arg !== "--json")], {
+    const proc = Bun.spawn([process.execPath, bin, "--json", "--session", session, ...launch, ...args.filter((arg) => arg !== "--json")], {
       stdin: "ignore",
       stdout: "pipe",
       stderr: "pipe",
@@ -86,7 +120,9 @@ export function createBrowser(session: string) {
       ]);
       if (signal?.aborted) return { success: false, error: "cancelled" };
       if (proc.signalCode) return { success: false, error: `agent-browser timed out after ${TIMEOUT_MS / 1000}s` };
-      return parseOutput(stdout, stderr, exitCode);
+      const result = parseOutput(stdout, stderr, exitCode);
+      if (!hide || !result.success) return result;
+      return { success: true, data: Object.fromEntries(Object.entries(result.data).map(([key, value]) => [key, redact(value, key)])) };
     } finally {
       clearTimeout(timer);
       signal?.removeEventListener("abort", kill);

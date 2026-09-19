@@ -6,6 +6,7 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import {
   agentBrowserPath,
   createBrowser,
+  LOGIN_STATE,
   createFetch,
   createSearch,
   fetchers,
@@ -185,7 +186,10 @@ async function serveMcp() {
       return { content: [{ type: "text", text: JSON.stringify(result) }], isError: !result.success };
     },
   );
-  const browser = createBrowser(`webmesh-mcp-${process.pid}`);
+  const browser = createBrowser(`webmesh-mcp-${process.pid}`, {
+    restore: LOGIN_STATE,
+    redact: process.env.WEBMESH_REVEAL_SECRETS !== "1",
+  });
   if (agentBrowserPath()) {
     server.registerTool(
       "browser",
@@ -195,7 +199,10 @@ async function serveMcp() {
           "Drive a real Chrome browser: open pages, click, type, read, and take screenshots. Pass one agent-browser command as args. " +
           'Loop: ["open", url], then ["snapshot", "-i"] to list interactive elements as @e1, @e2, then ["click", "@e2"], ' +
           '["fill", "@e3", "text"], or ["press", "Enter"]. Run ["snapshot", "-i"] again after the page changes; refs go stale. ' +
-          'Also ["screenshot"], ["get", "text", "@e1"], ["read"], ["tab", "list"], ["back"]. ["skills", "get", "core"] returns the full guide. ' +
+          '["screenshot", "--annotate"] labels elements with their refs; add "--if-changed" to skip unchanged images. ' +
+          '["read"] returns the rendered page as text. Also ["get", "text", "@e1"], ["select", "@e4", "value"], ["upload", "@e5", "/path"], ' +
+          '["scroll", "down"], ["tab", "list"], ["back"]. ["skills", "get", "core"] returns the full guide. ' +
+          "Sessions start with the logins saved by `webmesh login`. Secrets in output are redacted. " +
           "The session belongs to this server and closes when it exits. Returns JSON: { success, data } or { success, error }.",
         inputSchema: {
           args: z.array(z.string()).min(1).describe('One agent-browser command, e.g. ["click", "@e2"].'),
@@ -241,6 +248,8 @@ webmesh fetch <url>        fetch a page as markdown or HTML (JSON)
       --max-characters <n>   cut content at n characters (default 50000)
   -p, --providers <a,b>      only use these fetchers
 webmesh browser <command>    drive Chrome with agent-browser, e.g. open <url>, snapshot -i, click @e2
+webmesh login <url>          log in once in a visible browser; later browser sessions start logged in
+webmesh logout               forget saved logins
 webmesh providers            list search and fetch providers with cooldowns and health (JSON)
 webmesh mcp                  run the MCP server over stdio`;
 
@@ -251,9 +260,35 @@ if (process.argv[2] === "browser") {
     process.exit(1);
   }
   const args = process.argv.slice(3);
-  const session = args.some((arg) => arg === "--session" || arg.startsWith("--session=")) ? [] : ["--session", "webmesh"];
-  const proc = Bun.spawn([process.execPath, bin, ...session, ...args], { stdio: ["inherit", "inherit", "inherit"] });
+  const flag = (names: string[]) => args.some((arg) => names.some((name) => arg === name || arg.startsWith(`${name}=`)));
+  const session = flag(["--session"]) ? [] : ["--session", "webmesh"];
+  const login = flag(["--restore", "--profile", "--state", "--auto-connect"])
+    ? []
+    : ["--restore", LOGIN_STATE, "--restore-save", "never"];
+  const proc = Bun.spawn([process.execPath, bin, ...session, ...login, ...args], { stdio: ["inherit", "inherit", "inherit"] });
   process.exit(await proc.exited);
+}
+
+if (process.argv[2] === "login" || process.argv[2] === "logout") {
+  const bin = agentBrowserPath();
+  if (!bin) {
+    console.error("agent-browser is not installed.");
+    process.exit(1);
+  }
+  const run = (args: string[]) => Bun.spawn([process.execPath, bin, ...args], { stdio: ["inherit", "inherit", "inherit"] }).exited;
+  if (process.argv[2] === "logout") process.exit(await run(["state", "clear", LOGIN_STATE]));
+  const url = pageUrl.safeParse(process.argv[3]);
+  if (!url.success) {
+    console.error("Usage: webmesh login <url>");
+    process.exit(1);
+  }
+  const base = ["--session", "webmesh-login", "--restore", LOGIN_STATE, "--restore-save", "always", "--headed"];
+  if ((await run([...base, "open", url.data])) !== 0) process.exit(1);
+  console.log("Log in in the browser window, then press Enter here to save.");
+  for await (const _line of console) break;
+  await run([...base, "close"]);
+  console.log("Saved. Browser sessions from webmesh now start logged in. Run webmesh login again when a login expires.");
+  process.exit(0);
 }
 
 const { values, positionals } = parseArgs({
