@@ -1,14 +1,46 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { keyNames, loadSettings, maskProxy, proxyUrl, saveSettings, settingsPath } from "@webmesh/core";
 import { z } from "zod";
 
 const NAME = "webmesh";
+const SKILL_NAMES = ["webmesh", "webmesh-browser", "setup-webmesh"] as const;
+const skillPath = (name: (typeof SKILL_NAMES)[number]) => join(".agents", "skills", name, "SKILL.md");
 const config = z.record(z.string(), z.json());
 type Entry = z.infer<typeof config>[string];
 
 export type Outcome = "added" | "updated" | "already set" | "removed" | "not set" | `skipped: ${string}` | `failed: ${string}`;
+
+function bundledSkill(name: (typeof SKILL_NAMES)[number]): string {
+  const paths = [
+    join(import.meta.dir, "..", "..", "..", "skills", name, "SKILL.md"),
+    join(import.meta.dir, "skills", name, "SKILL.md"),
+  ];
+  const path = paths.find(existsSync);
+  if (!path) throw new Error(`The bundled ${name} skill is missing.`);
+  return readFileSync(path, "utf8");
+}
+
+export function applySkill(
+  root: string,
+  remove: boolean,
+  name: (typeof SKILL_NAMES)[number] = NAME,
+  content = bundledSkill(name),
+): Outcome {
+  const path = join(root, skillPath(name));
+  if (remove) {
+    if (!existsSync(path)) return "not set";
+    unlinkSync(path);
+    if (readdirSync(dirname(path)).length === 0) rmdirSync(dirname(path));
+    return "removed";
+  }
+  const before = existsSync(path) ? readFileSync(path, "utf8") : undefined;
+  if (before === content) return "already set";
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, content);
+  return before === undefined ? "added" : "updated";
+}
 
 export function editServers(text: string, section: string, entry: Entry | undefined): { text: string; outcome: Outcome } | undefined {
   let parsed;
@@ -93,6 +125,11 @@ export async function setup(only: string | undefined, remove: boolean): Promise<
   const lines: string[] = [];
   for (const agent of chosen) {
     lines.push(`${agent.name.padEnd(12)} ${agent.found() ? await agent.apply(remove) : "not found"}`);
+  }
+  if (!remove || !only) {
+    for (const name of SKILL_NAMES) {
+      lines.push(`${`skill ${name}`.padEnd(20)} ${applySkill(process.cwd(), remove, name)}`);
+    }
   }
   if (!remove && Bun.which("webmesh") === null) {
     lines.push("", "webmesh isn't on your PATH, so agents can't start it. Install it with: bun add -g @webmesh/cli");

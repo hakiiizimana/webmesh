@@ -1,5 +1,8 @@
 import { expect, test } from "bun:test";
-import { editServers } from "../src/setup";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { applySkill, editServers } from "../src/setup";
 
 const entry = { command: "webmesh", args: ["mcp"] };
 
@@ -24,4 +27,19 @@ test("does not rewrite a file that is already right, and removes cleanly", () =>
 
 test("refuses files that are not plain JSON instead of overwriting them", () => {
   expect(editServers('{ // comment\n "mcp": {} }', "mcp", entry)).toBeUndefined();
+});
+
+test("installs, updates, and removes the project skill", () => {
+  const root = mkdtempSync(join(tmpdir(), "webmesh-setup-"));
+  const path = join(root, ".agents", "skills", "webmesh", "SKILL.md");
+
+  expect(applySkill(root, false, "webmesh", "first")).toBe("added");
+  expect(applySkill(root, false, "webmesh", "first")).toBe("already set");
+  expect(applySkill(root, false, "webmesh", "second")).toBe("updated");
+  expect(readFileSync(path, "utf8")).toBe("second");
+  writeFileSync(join(root, ".agents", "skills", "webmesh", "notes.md"), "keep");
+  expect(applySkill(root, true, "webmesh")).toBe("removed");
+  expect(existsSync(path)).toBe(false);
+  expect(existsSync(join(root, ".agents", "skills", "webmesh", "notes.md"))).toBe(true);
+  expect(applySkill(root, true, "webmesh")).toBe("not set");
 });

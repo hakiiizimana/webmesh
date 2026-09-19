@@ -18,7 +18,7 @@
     "access": "public"
   },
   "scripts": {
-    "build": "bun build src/index.ts --target bun --outfile dist/webmesh.js --external impit && cp ../../README.md ../../LICENSE .",
+    "build": "bun build src/index.ts --target bun --outfile dist/webmesh.js --external impit && mkdir -p dist/skills && cp -R ../../skills/* dist/skills/ && cp ../../README.md ../../LICENSE .",
     "check-types": "tsc --noEmit",
     "test": "bun test",
     "prepublishOnly": "bun run build"
