@@ -225,6 +225,13 @@ describe("router", () => {
     expect(used.calls).toHaveLength(1);
   });
 
+  test("drops results outside the requested domains, whatever the provider returned", async () => {
+    const loose = fake([item("https://docs.sqlite.org/wal"), item("https://stackoverflow.com/q/1"), item("https://sqlite.org.evil.com")]);
+    const result = await setup({ loose }).search("q", { filters: { includeDomains: ["sqlite.org"] } });
+
+    expect(result.success && result.data.map((found) => found.url)).toEqual(["https://docs.sqlite.org/wal"]);
+  });
+
   test("filters set to their defaults do not rule providers out", async () => {
     const plain = Object.assign(fake([item("https://p.com")]), {
       supports: (filters: SearchFilters) => Object.keys(filters).length === 0,

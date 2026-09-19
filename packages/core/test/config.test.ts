@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { providers } from "../src/config";
+import type { SearchFilters } from "../src/types";
 
 test("builds Tavily filters", () => {
   const body = providers.tavily.body("rust ownership", 8, {
@@ -107,4 +108,36 @@ test("routes YouTube only for supported video filters", () => {
   ).toBe(false);
   expect(providers.tavily.supports?.({ type: "video" })).toBe(false);
   expect(providers.brave.supports?.({ type: "video" })).toBe(false);
+});
+
+test("builds DuckDuckGo and Brave web filter URLs", () => {
+  const filters: SearchFilters = {
+    freshness: "week",
+    includeDomains: ["sqlite.org"],
+    excludeDomains: ["stackoverflow.com"],
+    exactMatch: true,
+    safeSearch: "strict",
+  };
+  const ddg = new URL(providers["duckduckgo-html"].url("wal mode", filters)).searchParams;
+  const brave = new URL(providers["brave-web"].url("wal mode", { ...filters, safeSearch: undefined })).searchParams;
+
+  expect(Object.fromEntries(ddg)).toEqual({
+    q: '"wal mode" (site:sqlite.org) -site:stackoverflow.com',
+    df: "w",
+    kp: "1",
+  });
+  expect(Object.fromEntries(brave)).toEqual({
+    q: '"wal mode" (site:sqlite.org) -site:stackoverflow.com',
+    source: "web",
+    tf: "pw",
+  });
+});
+
+test("scrapers decline filters they cannot pass through", () => {
+  const range = { freshness: { from: "2026-01-01", to: "2026-01-31" } };
+  expect(providers["duckduckgo-lite"].supports({ freshness: "day", safeSearch: "off" })).toBe(true);
+  expect(providers["duckduckgo-lite"].supports(range)).toBe(false);
+  expect(providers["duckduckgo-html"].supports({ country: "SI" })).toBe(false);
+  expect(providers["brave-web"].supports({ safeSearch: "strict" })).toBe(false);
+  expect(providers["brave-web"].supports(range)).toBe(false);
 });

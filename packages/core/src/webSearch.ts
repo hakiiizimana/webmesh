@@ -134,6 +134,14 @@ function withoutDefaults(filters: SearchFilters): SearchFilters {
   return normalized;
 }
 
+/** Keeps results inside includeDomains and outside excludeDomains, whatever the provider did with them. */
+function inDomains(url: string, filters: SearchFilters): boolean {
+  const host = URL.parse(url)?.hostname ?? "";
+  const matches = (domain: string) => host === domain || host.endsWith(`.${domain}`);
+  if (filters.includeDomains?.length && !filters.includeDomains.some(matches)) return false;
+  return !filters.excludeDomains?.some(matches);
+}
+
 /** Resolves after `ms`, or as soon as `signal` aborts. */
 function pause(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
@@ -280,7 +288,10 @@ export function createSearch<R extends Record<string, Provider>>(registry: R, op
         context.signal,
       );
       if (context.signal.aborted) return { id, failure: "cancelled" };
-      const items = found.filter((item) => item.url).map(tidy).slice(0, context.limit);
+      const items = found
+        .filter((item) => item.url && inDomains(item.url, context.filters))
+        .map(tidy)
+        .slice(0, context.limit);
       if (items.length === 0) {
         store.observe(id, { success: 0 });
         return { id, failure: "no results" };

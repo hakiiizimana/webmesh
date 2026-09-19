@@ -295,6 +295,42 @@ function braveUrl(query: string, limit: number, filters: SearchFilters): string 
   return `https://api.search.brave.com/res/v1/${endpoint}/search?${params}`;
 }
 
+/** The scrapers take only the preset windows (day/week/month/year) as URL params, not date ranges. */
+function presetFreshness(filters: SearchFilters): boolean {
+  return filters.freshness === undefined || !isFreshnessRange(filters.freshness);
+}
+
+function duckduckgoSupports(filters: SearchFilters): boolean {
+  return (
+    onlyFilters("freshness", "includeDomains", "excludeDomains", "exactMatch", "safeSearch")(filters) &&
+    presetFreshness(filters)
+  );
+}
+
+function braveWebSupports(filters: SearchFilters): boolean {
+  return onlyFilters("freshness", "includeDomains", "excludeDomains", "exactMatch")(filters) && presetFreshness(filters);
+}
+
+const DUCKDUCKGO_FRESHNESS = { day: "d", week: "w", month: "m", year: "y" } as const;
+const DUCKDUCKGO_SAFE_SEARCH = { strict: "1", moderate: "-1", off: "-2" } as const;
+
+/** Domains and exact match go into the query as operators; freshness and safe search are URL params. */
+function duckduckgoParams(query: string, filters: SearchFilters): URLSearchParams {
+  const params = new URLSearchParams({ q: queryWithOperators(query, filters, true) });
+  if (filters.freshness !== undefined && !isFreshnessRange(filters.freshness)) {
+    params.set("df", DUCKDUCKGO_FRESHNESS[filters.freshness]);
+  }
+  if (filters.safeSearch) params.set("kp", DUCKDUCKGO_SAFE_SEARCH[filters.safeSearch]);
+  return params;
+}
+
+function braveWebUrl(query: string, filters: SearchFilters): string {
+  const params = new URLSearchParams({ q: queryWithOperators(query, filters, true), source: "web" });
+  const freshness = braveFreshness(filters.freshness);
+  if (freshness) params.set("tf", freshness);
+  return `https://search.brave.com/search?${params}`;
+}
+
 function youtubeSupports(filters: SearchFilters): boolean {
   return (
     filters.type === "video" &&
@@ -333,7 +369,7 @@ export const providers = {
   },
   "duckduckgo-html": {
     kind: "scrape",
-    url: (query) => `https://html.duckduckgo.com/html/?${new URLSearchParams({ q: query })}`,
+    url: (query, filters) => `https://html.duckduckgo.com/html/?${duckduckgoParams(query, filters)}`,
     parser: "duckduckgo-html",
     headers: {
       accept: "text/html,application/xhtml+xml;q=0.9,*/*;q=0.8",
@@ -344,13 +380,13 @@ export const providers = {
       "sec-fetch-user": "?1",
       cookie: "kl=us-en",
     },
-    supports: noFilters,
+    supports: duckduckgoSupports,
   },
   "brave-web": {
     kind: "scrape",
-    url: (query) => `https://search.brave.com/search?${new URLSearchParams({ q: query, source: "web" })}`,
+    url: braveWebUrl,
     parser: "brave-web",
-    supports: noFilters,
+    supports: braveWebSupports,
   },
   mwmbl: {
     kind: "public",
@@ -361,9 +397,9 @@ export const providers = {
   },
   "duckduckgo-lite": {
     kind: "scrape",
-    url: (query) => `https://lite.duckduckgo.com/lite/?${new URLSearchParams({ q: query })}`,
+    url: (query, filters) => `https://lite.duckduckgo.com/lite/?${duckduckgoParams(query, filters)}`,
     parser: "duckduckgo-lite",
-    supports: noFilters,
+    supports: duckduckgoSupports,
   },
   "firecrawl-free": {
     kind: "public",
