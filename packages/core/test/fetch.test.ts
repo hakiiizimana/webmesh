@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { createFetch, type FetchedPage, type Fetcher, pageFromExa, pageFromHtml, pageFromJina } from "../src/fetch";
+import { createFetch, fetchers, type FetchedPage, type Fetcher, pageFromExa, pageFromHtml, pageFromJina } from "../src/fetch";
 import { HttpError } from "../src/http";
 import { TargetError } from "../src/router";
 import { memoryStore } from "../src/state";
@@ -29,7 +29,13 @@ function fetcher(result: FetchedPage | Error, kind: Fetcher["kind"] = "public", 
 const page = (content: string): FetchedPage => ({ url: "https://a.com", title: "A", content });
 
 const setup = <R extends Record<string, Fetcher>>(registry: R) =>
-  createFetch(registry, { store: memoryStore(), env: {}, random: () => 0, retryDelayMs: 0 });
+  createFetch(registry, {
+    store: memoryStore(),
+    env: {},
+    random: () => 0,
+    retryDelayMs: 0,
+    resolve: async () => [{ address: "93.184.216.34", family: 4 }],
+  });
 
 test("turns a page into its main content, keeping code blocks", async () => {
   const markdown = await pageFromHtml(ARTICLE, "https://notes.example/wal", "markdown");
@@ -96,7 +102,13 @@ test("only the local fetch and the browser use the proxy; readers go direct", as
     },
   });
   const registry = { reader: spy("public", page("ok")), direct: spy("local", new Error("too little content")) };
-  await createFetch(registry, { store: memoryStore(), env: {}, random: () => 0, proxy: "http://proxy:8000" }).fetch("https://a.com");
+  await createFetch(registry, {
+    store: memoryStore(),
+    env: {},
+    random: () => 0,
+    proxy: "http://proxy:8000",
+    resolve: async () => [{ address: "93.184.216.34", family: 4 }],
+  }).fetch("https://a.com");
 
   expect(seen).toEqual({ local: "http://proxy:8000", public: undefined });
 });
@@ -130,4 +142,56 @@ test("refuses anything but http and https", async () => {
 
   expect(result).toEqual({ success: false, error: "Only http and https URLs can be fetched." });
   expect(reader.calls).toHaveLength(0);
+});
+
+test("blocks private DNS answers unless the setting allows them", async () => {
+  const blocked = fetcher(page("secret"));
+  const resolve = async () => [{ address: "10.1.2.3", family: 4 }];
+  const options = { store: memoryStore(), env: {}, resolve };
+
+  const denied = await createFetch({ blocked }, options).fetch("http://internal.example");
+  const allowed = await createFetch({ blocked }, { ...options, allowPrivateNetworks: true }).fetch("http://internal.example");
+
+  expect(denied).toMatchObject({ success: false, error: expect.stringContaining("private") });
+  expect(allowed.success).toBe(true);
+  expect(blocked.calls).toEqual(["http://internal.example"]);
+});
+
+test("passes the private-network setting to browser fetchers", async () => {
+  let allowed: boolean | undefined;
+  const browser: Fetcher = {
+    kind: "browser",
+    formats: ["markdown"],
+    async fetch(_url, context) {
+      allowed = context.allowPrivateNetworks;
+      return page("rendered");
+    },
+  };
+
+  await createFetch({ browser }, { store: memoryStore(), env: {}, allowPrivateNetworks: true }).fetch("http://127.0.0.1");
+
+  expect(allowed).toBe(true);
+});
+
+test("blocks a redirect to a private address before following it", async () => {
+  let privateRequests = 0;
+  const destination = Bun.serve({ port: 0, fetch: () => new Response(String(++privateRequests)) });
+  const source = Bun.serve({
+    port: 0,
+    fetch: () => Response.redirect(`http://127.0.0.1:${destination.port}/secret`),
+  });
+  try {
+    const resolve = async (hostname: string) => [
+      { address: hostname === "127.0.0.1" ? "127.0.0.1" : "93.184.216.34", family: 4 },
+    ];
+    const result = await createFetch({ direct: fetchers.direct }, { store: memoryStore(), env: {}, resolve }).fetch(
+      `http://localhost:${source.port}`,
+    );
+
+    expect(result).toMatchObject({ success: false, error: expect.stringContaining("private") });
+    expect(privateRequests).toBe(0);
+  } finally {
+    source.stop(true);
+    destination.stop(true);
+  }
 });

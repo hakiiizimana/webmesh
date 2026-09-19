@@ -41,7 +41,12 @@ const settings = (() => {
 const env = mergeEnv(settings.keys, process.env);
 const store = openStore();
 const searcher = createSearch(providers, { store, cache: store, env, proxy: settings.proxy });
-const fetcher = createFetch(fetchers, { store, env, proxy: settings.proxy });
+const fetcher = createFetch(fetchers, {
+  store,
+  env,
+  proxy: settings.proxy,
+  allowPrivateNetworks: settings.allowPrivateNetworks,
+});
 
 const limitSchema = z.number().int().min(1).max(20);
 const pageUrl = z.url({ protocol: /^https?$/ });
@@ -207,6 +212,7 @@ async function serveMcp() {
     restore: LOGIN_STATE,
     redact: process.env.WEBMESH_REVEAL_SECRETS !== "1",
     proxy: settings.proxy,
+    allowPrivateNetworks: settings.allowPrivateNetworks,
   });
   if (agentBrowserPath()) {
     server.registerTool(

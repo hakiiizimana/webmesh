@@ -55,3 +55,12 @@ test("rejects closing every agent-browser session", async () => {
     error: "webmesh cannot close browser sessions owned by other agents; drop --all.",
   });
 });
+
+test("rejects browser URLs that resolve to private addresses", async () => {
+  const browser = createBrowser("webmesh-test", { resolve: async () => [{ address: "127.0.0.1", family: 4 }] });
+
+  expect(await browser.run(["open", "http://internal.example"])).toMatchObject({
+    success: false,
+    error: expect.stringContaining("private"),
+  });
+});

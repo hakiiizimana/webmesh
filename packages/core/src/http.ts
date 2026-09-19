@@ -23,6 +23,7 @@ type RequestOptions = {
   signal: AbortSignal;
   browser?: boolean;
   proxy?: string;
+  redirect?: "follow" | "manual" | "error";
 };
 
 function createCookieJar() {
@@ -69,7 +70,7 @@ async function send(url: string, { browser, proxy, ...init }: RequestOptions): P
 
 export async function request(url: string, options: RequestOptions): Promise<HttpResponse> {
   const res = await send(url, options);
-  if (res.ok) return res;
+  if (res.ok || (options.redirect === "manual" && res.status >= 300 && res.status < 400)) return res;
   const body = await res.text();
   throw new HttpError(res.status, parseRetryAfter(res, body), `HTTP ${res.status}: ${body.slice(0, 200)}`);
 }

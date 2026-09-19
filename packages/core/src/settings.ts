@@ -8,6 +8,7 @@ export const proxyUrl = z.url({ protocol: /^https?$/ });
 const settingsSchema = z.object({
   keys: z.record(z.string(), z.string()).default({}),
   proxy: proxyUrl.optional(),
+  allowPrivateNetworks: z.boolean().optional(),
 });
 
 export type Settings = z.infer<typeof settingsSchema>;

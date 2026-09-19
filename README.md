@@ -40,6 +40,8 @@ No API keys needed. To add a paid provider, save its key with `webmesh setup key
 
 Getting blocked? `webmesh setup proxy <url>` sends scrapers, local fetches, and anonymous browsing through a proxy. Sites you logged into and API calls stay direct, so logins don't get flagged.
 
+`web_fetch` and the MCP browser block loopback, private, and link-local destinations after DNS resolution. Set `"allowPrivateNetworks": true` in `~/.config/webmesh/config.json` only when agents should reach services on your local network.
+
 webmesh ships its own copy of [agent-browser](https://agent-browser.dev) and drives the Chrome or Chromium you already have. With neither installed, run `webmesh browser install`. Run `webmesh login <url>` once to log in to a site, and browser sessions start logged in after that.
 
 ## Use it from the terminal

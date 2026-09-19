@@ -13,5 +13,6 @@ export {
 export { memoryCache, memoryStore, openStore, type CacheStore, type StateStore } from "./state";
 export type { Freshness, FreshnessRange, SearchFilters, SearchItem, SearchResult, SuccessfulSearch } from "./types";
 export { usesProxy } from "./router";
+export { blockedHostname, blockedUrl, isBlockedAddress, type ResolveAddresses, type ResolvedAddress } from "./network";
 export { loadSettings, maskProxy, mergeEnv, proxyUrl, saveSettings, settingsPath, type Settings } from "./settings";
 export { createSearch, providers } from "./webSearch";

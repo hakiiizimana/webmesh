@@ -1,6 +1,8 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { z } from "zod";
+import { blockedUrl, type ResolveAddresses } from "./network";
+import { startNetworkProxy } from "./networkProxy";
 
 const TIMEOUT_MS = 60_000;
 const MAX_FIELD = 30_000;
@@ -138,11 +140,16 @@ export function browserEnv(proxy: string | undefined): Record<string, string | u
   return Object.fromEntries(Object.entries(process.env).filter(([name]) => !PROXY_ENV.test(name)));
 }
 
-type BrowserOptions = { restore?: string; redact?: boolean; proxy?: string };
+type BrowserOptions = { restore?: string; redact?: boolean; proxy?: string; allowPrivateNetworks?: boolean; resolve?: ResolveAddresses };
 
-export function createBrowser(session: string, { restore, redact: hide = false, proxy }: BrowserOptions = {}) {
+export function createBrowser(
+  session: string,
+  { restore, redact: hide = false, proxy, allowPrivateNetworks = false, resolve }: BrowserOptions = {},
+) {
   let used = false;
+  let closed = false;
   let launch: Promise<string[]> | undefined;
+  let filter: ReturnType<typeof startNetworkProxy> | undefined;
   let queue: Promise<BrowserResult | undefined> = Promise.resolve(undefined);
 
   // One page, one command at a time: parallel tool calls would race each other.
@@ -156,13 +163,26 @@ export function createBrowser(session: string, { restore, redact: hide = false, 
     if (args[0] === "close" && args.includes("--all")) {
       return { success: false, error: "webmesh cannot close browser sessions owned by other agents; drop --all." };
     }
+    if (!allowPrivateNetworks) {
+      for (const arg of args) {
+        if (!/^https?:\/\//i.test(arg)) continue;
+        const error = await blockedUrl(arg, resolve);
+        if (error) return { success: false, error };
+      }
+    }
     const bin = agentBrowserPath();
     if (!bin) return { success: false, error: "agent-browser is not installed." };
     if (args.some((arg) => arg === "--session" || arg.startsWith("--session="))) {
       return { success: false, error: "webmesh manages the browser session; drop --session." };
     }
     used = true;
-    const flags = await (launch ??= launchFlags(bin, { restore, proxy }));
+    const flags = await (launch ??= (async () => {
+      if (allowPrivateNetworks) return launchFlags(bin, { restore, proxy });
+      const directHosts = restore ? (await loginBypass(bin)) ?? [] : [];
+      filter = startNetworkProxy({ upstreamProxy: proxy, directHosts, resolve });
+      const network = await filter;
+      return [...(await launchFlags(bin, { restore })), "--proxy", network.url];
+    })());
     const proc = Bun.spawn([process.execPath, bin, "--json", "--session", session, ...flags, ...args.filter((arg) => arg !== "--json")], {
       env: browserEnv(proxy),
       stdin: "ignore",
@@ -190,7 +210,13 @@ export function createBrowser(session: string, { restore, redact: hide = false, 
   }
 
   async function close(): Promise<void> {
-    if (used) await run(["close"]);
+    if (closed) return;
+    closed = true;
+    try {
+      if (used) await run(["close"]);
+    } finally {
+      await (await filter)?.close();
+    }
   }
 
   return { session, run, close };

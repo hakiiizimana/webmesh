@@ -8,7 +8,14 @@ import { loadSettings, maskProxy, mergeEnv, saveSettings } from "../src/settings
 
 test("saves settings only the owner can read, and agent env beats the file", () => {
   const path = join(mkdtempSync(join(tmpdir(), "webmesh-")), "config.json");
-  saveSettings({ keys: { EXA_API_KEY: "from-file", TAVILY_API_KEY: "from-file" }, proxy: "http://u:p@proxy.example:8000" }, path);
+  saveSettings(
+    {
+      keys: { EXA_API_KEY: "from-file", TAVILY_API_KEY: "from-file" },
+      proxy: "http://u:p@proxy.example:8000",
+      allowPrivateNetworks: true,
+    },
+    path,
+  );
 
   const settings = loadSettings(path);
   const env = mergeEnv(settings.keys, { EXA_API_KEY: "from-agent", TAVILY_API_KEY: "" });
@@ -16,6 +23,7 @@ test("saves settings only the owner can read, and agent env beats the file", () 
   expect(statSync(path).mode & 0o777).toBe(0o600);
   expect([env.EXA_API_KEY, env.TAVILY_API_KEY]).toEqual(["from-agent", "from-file"]);
   expect(maskProxy(settings.proxy ?? "")).toBe("http://u:***@proxy.example:8000/");
+  expect(settings.allowPrivateNetworks).toBe(true);
 });
 
 test("sends requests through the proxy with both fetch and the browser-like client", async () => {

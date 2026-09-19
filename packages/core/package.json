@@ -15,6 +15,7 @@
     "defuddle": "^0.19.4",
     "impit": "^0.14.4",
     "linkedom": "^0.18.13",
+    "proxy-chain": "3.0.1",
     "zod": "catalog:"
   },
   "devDependencies": {

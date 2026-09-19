@@ -4,6 +4,7 @@ import { agentBrowserPath, createBrowser } from "./browser";
 import { clean } from "./html";
 import { request } from "./http";
 import { callMcp } from "./mcp";
+import { blockedUrl, type ResolveAddresses } from "./network";
 import { publishedDate } from "./parser";
 import { createRouter, type Routed, type RouterOptions, TargetError, usesProxy } from "./router";
 import type { ProviderKind } from "./types";
@@ -12,12 +13,21 @@ const BUDGET_MS = 30_000;
 const HEDGE_MS = 3_000;
 const MAX_CHARACTERS = 50_000;
 const MIN_WORDS = 25;
+const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 
 export type PageFormat = "markdown" | "html";
 
 export type FetchedPage = { url: string; title: string; content: string; publishedAt?: string };
 
-export type FetchContext = { format: PageFormat; maxCharacters: number; signal: AbortSignal; key: string; proxy?: string };
+export type FetchContext = {
+  format: PageFormat;
+  maxCharacters: number;
+  signal: AbortSignal;
+  key: string;
+  proxy?: string;
+  allowPrivateNetworks?: boolean;
+  resolve?: ResolveAddresses;
+};
 
 export type Fetcher = {
   kind: ProviderKind;
@@ -46,25 +56,41 @@ export async function pageFromHtml(html: string, url: string, format: PageFormat
   return { url, title, content: page.content, publishedAt: publishedDate(page.published) };
 }
 
-async function fetchDirect(url: string, { format, signal, proxy }: FetchContext): Promise<FetchedPage> {
-  const res = await request(url, {
-    signal,
-    browser: true,
-    proxy,
-    headers: { accept: "text/html,application/xhtml+xml;q=0.9,text/plain;q=0.8,*/*;q=0.5" },
-  });
+async function fetchDirect(
+  url: string,
+  { format, signal, proxy, allowPrivateNetworks, resolve }: FetchContext,
+): Promise<FetchedPage> {
+  let target = url;
+  let res;
+  for (let redirects = 0; ; redirects += 1) {
+    if (!allowPrivateNetworks) {
+      const error = await blockedUrl(target, resolve);
+      if (error) throw new TargetError(error);
+    }
+    res = await request(target, {
+      signal,
+      browser: true,
+      proxy,
+      redirect: "manual",
+      headers: { accept: "text/html,application/xhtml+xml;q=0.9,text/plain;q=0.8,*/*;q=0.5" },
+    });
+    const location = res.headers.get("location");
+    if (!REDIRECT_STATUSES.has(res.status) || !location) break;
+    if (redirects >= 9) throw new TargetError("too many redirects");
+    target = new URL(location, target).href;
+  }
   const type = res.headers.get("content-type") ?? "";
   const body = await res.text();
-  if (type.includes("html")) return pageFromHtml(body, url, format);
-  if (type.startsWith("text/") || type.includes("json")) return { url, title: url, content: body };
+  if (type.includes("html")) return pageFromHtml(body, target, format);
+  if (type.startsWith("text/") || type.includes("json")) return { url: target, title: target, content: body };
   throw new Error(`can't read ${type || "this content type"} locally`);
 }
 
 const openedPage = z.object({ title: z.string().optional(), url: z.string().optional() });
 const readPage = z.object({ content: z.string(), status: z.number().nullish() });
 
-async function fetchInBrowser(url: string, { signal, proxy }: FetchContext): Promise<FetchedPage> {
-  const browser = createBrowser(`webmesh-fetch-${crypto.randomUUID().slice(0, 8)}`, { proxy });
+async function fetchInBrowser(url: string, { signal, proxy, allowPrivateNetworks }: FetchContext): Promise<FetchedPage> {
+  const browser = createBrowser(`webmesh-fetch-${crypto.randomUUID().slice(0, 8)}`, { proxy, allowPrivateNetworks });
   try {
     const opened = await browser.run(["open", url], signal);
     if (!opened.success) throw new Error(opened.error);
@@ -199,7 +225,10 @@ export const isFetcherId = (id: string): id is FetcherId => Object.hasOwn(fetche
 
 type FetchOptions<Id> = { format?: PageFormat; maxCharacters?: number; only?: Id[] };
 
-export function createFetch<R extends Record<string, Fetcher>>(registry: R, options: RouterOptions & { proxy?: string }) {
+export function createFetch<R extends Record<string, Fetcher>>(
+  registry: R,
+  options: RouterOptions & { proxy?: string; allowPrivateNetworks?: boolean; resolve?: ResolveAddresses },
+) {
   type Id = keyof R & string;
   const router = createRouter("fetch", registry, options, { budgetMs: BUDGET_MS, hedgeMs: HEDGE_MS });
 
@@ -209,6 +238,10 @@ export function createFetch<R extends Record<string, Fetcher>>(registry: R, opti
   ): Promise<FetchResult> {
     const protocol = URL.parse(url)?.protocol;
     if (protocol !== "https:" && protocol !== "http:") return { success: false, error: "Only http and https URLs can be fetched." };
+    if (!options.allowPrivateNetworks) {
+      const error = await blockedUrl(url, options.resolve);
+      if (error) return { success: false, error };
+    }
     const configured = (only ?? router.ids).filter(router.isReady);
     const ready = configured.filter((id) => router.get(id).formats.includes(format));
     if (ready.length === 0) {
@@ -221,7 +254,15 @@ export function createFetch<R extends Record<string, Fetcher>>(registry: R, opti
     return router.route(ready, {
       call: async (id, key, signal): Promise<Page> => {
         const proxy = usesProxy(router.get(id).kind) ? options.proxy : undefined;
-        const page = await router.get(id).fetch(url, { format, maxCharacters, signal, key, proxy });
+        const page = await router.get(id).fetch(url, {
+          format,
+          maxCharacters,
+          signal,
+          key,
+          proxy,
+          allowPrivateNetworks: options.allowPrivateNetworks,
+          resolve: options.resolve,
+        });
         const content = page.content.trim();
         return { ...page, format, content: content.slice(0, maxCharacters), truncated: content.length > maxCharacters };
       },
