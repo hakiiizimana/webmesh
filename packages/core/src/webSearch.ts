@@ -2,7 +2,7 @@ import { providers as specs, type ProviderId, type ProviderSpec } from "./config
 import { HttpError, request } from "./http";
 import { callMcp } from "./mcp";
 import { parse } from "./parser";
-import { createRouter, type RouterOptions } from "./router";
+import { createRouter, type RouterOptions, usesProxy } from "./router";
 import { type CacheStore, memoryCache } from "./state";
 import type { Provider, SearchContext, SearchFilters, SearchItem, SearchResult } from "./types";
 
@@ -26,7 +26,7 @@ async function invoke(spec: ProviderSpec, query: string, ctx: SearchContext): Pr
   }
   if ("search" in spec) return spec.search(query, ctx);
   if (spec.kind === "scrape") {
-    const res = await request(spec.url(query, filters), { signal, browser: true, headers: spec.headers });
+    const res = await request(spec.url(query, filters), { signal, browser: true, headers: spec.headers, proxy: ctx.proxy });
     if (res.status === 202) throw new HttpError(202, undefined, "HTTP 202: DuckDuckGo bot check");
     return parse(spec.parser, query, await res.text());
   }
@@ -72,6 +72,7 @@ export const providers = {
 
 type SearchOptions = RouterOptions & {
   cache?: CacheStore;
+  proxy?: string;
 };
 
 function withoutDefaults(filters: SearchFilters): SearchFilters {
@@ -170,7 +171,13 @@ export function createSearch<R extends Record<string, Provider>>(registry: R, op
 
     const result = await router.route(ready, {
       call: async (id, apiKey, signal) =>
-        (await router.get(id).search(query, { limit, signal, key: apiKey, filters }))
+        (await router.get(id).search(query, {
+          limit,
+          signal,
+          key: apiKey,
+          filters,
+          proxy: usesProxy(router.get(id).kind) ? options.proxy : undefined,
+        }))
           .filter((item) => item.url && inDomains(item.url, filters))
           .map(tidy)
           .slice(0, limit),

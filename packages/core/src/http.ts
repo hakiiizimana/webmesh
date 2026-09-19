@@ -22,6 +22,7 @@ type RequestOptions = {
   body?: string;
   signal: AbortSignal;
   browser?: boolean;
+  proxy?: string;
 };
 
 function createCookieJar() {
@@ -40,8 +41,14 @@ function createCookieJar() {
   };
 }
 
-let impit: Impit | undefined;
-const browserClient = () => (impit ??= new Impit({ browser: "chrome", cookieJar: createCookieJar() }));
+const clients = new Map<string, Impit>();
+function browserClient(proxy: string | undefined): Impit {
+  const existing = clients.get(proxy ?? "");
+  if (existing) return existing;
+  const client = new Impit({ browser: "chrome", cookieJar: createCookieJar(), proxyUrl: proxy });
+  clients.set(proxy ?? "", client);
+  return client;
+}
 
 function parseRetryAfter(res: HttpResponse, body: string): number | undefined {
   const header = res.headers.get("retry-after");
@@ -50,9 +57,10 @@ function parseRetryAfter(res: HttpResponse, body: string): number | undefined {
   return match ? Number(match[1]) : undefined;
 }
 
-async function send(url: string, { browser, ...init }: RequestOptions): Promise<HttpResponse> {
+async function send(url: string, { browser, proxy, ...init }: RequestOptions): Promise<HttpResponse> {
   try {
-    return browser ? await browserClient().fetch(url, init) : await fetch(url, init);
+    if (browser) return await browserClient(proxy).fetch(url, init);
+    return await fetch(url, proxy ? { ...init, proxy } : init);
   } catch (err) {
     if (init.signal.aborted) throw err;
     throw new NetworkError(err instanceof Error ? err.message : String(err), { cause: err });

@@ -378,6 +378,7 @@ export const searchYoutube = async (query: string, context: SearchContext): Prom
     },
     body: JSON.stringify(youtubeSearchBodyFor(query, context.filters)),
     signal: context.signal,
+    proxy: context.proxy,
   });
   return parseYoutubeSearchResponse(await response.text()).slice(0, context.limit);
 };

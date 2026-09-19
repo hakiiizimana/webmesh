@@ -5,6 +5,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import {
   agentBrowserPath,
+  browserEnv,
   checkProviders,
   createBrowser,
   LOGIN_STATE,
@@ -13,8 +14,13 @@ import {
   fetchers,
   isFetcherId,
   isProviderId,
+  launchFlags,
+  loadSettings,
+  maskProxy,
+  mergeEnv,
   openStore,
   providers,
+  usesProxy,
   type FetchResult,
   type Freshness,
   type SearchFilters,
@@ -22,11 +28,20 @@ import {
 } from "@webmesh/core";
 import { z } from "zod";
 import { version } from "../package.json";
-import { setup } from "./setup";
+import { setKey, setProxy, setup, type SetupResult } from "./setup";
 
+const settings = (() => {
+  try {
+    return loadSettings();
+  } catch (err) {
+    console.error(err instanceof Error ? err.message : String(err));
+    process.exit(1);
+  }
+})();
+const env = mergeEnv(settings.keys, process.env);
 const store = openStore();
-const searcher = createSearch(providers, { store, cache: store });
-const fetcher = createFetch(fetchers, { store });
+const searcher = createSearch(providers, { store, cache: store, env, proxy: settings.proxy });
+const fetcher = createFetch(fetchers, { store, env, proxy: settings.proxy });
 
 const limitSchema = z.number().int().min(1).max(20);
 const pageUrl = z.url({ protocol: /^https?$/ });
@@ -191,6 +206,7 @@ async function serveMcp() {
   const browser = createBrowser(`webmesh-mcp-${process.pid}`, {
     restore: LOGIN_STATE,
     redact: process.env.WEBMESH_REVEAL_SECRETS !== "1",
+    proxy: settings.proxy,
   });
   if (agentBrowserPath()) {
     server.registerTool(
@@ -253,6 +269,8 @@ webmesh browser <command>    drive Chrome with agent-browser, e.g. open <url>, s
 webmesh setup                add webmesh to every coding agent found on this machine
   -a, --agent <name>         only this agent (claude-code, codex, cursor, pi, opencode)
       --remove               take webmesh out again
+webmesh setup proxy <url>    send scrapers, local fetches, and anonymous browsing through a proxy (--remove to stop)
+webmesh setup key <NAME>     save an API key such as EXA_API_KEY; reads it from stdin (--remove to delete)
 webmesh login <url>          log in once in a visible browser; later browser sessions start logged in
 webmesh logout               forget saved logins
 webmesh check                try every provider once; exits 1 if one looks broken (not just blocked)
@@ -268,10 +286,12 @@ if (process.argv[2] === "browser") {
   const args = process.argv.slice(3);
   const flag = (names: string[]) => args.some((arg) => names.some((name) => arg === name || arg.startsWith(`${name}=`)));
   const session = flag(["--session"]) ? [] : ["--session", "webmesh"];
-  const login = flag(["--restore", "--profile", "--state", "--auto-connect"])
-    ? []
-    : ["--restore", LOGIN_STATE, "--restore-save", "never"];
-  const proc = Bun.spawn([process.execPath, bin, ...session, ...login, ...args], { stdio: ["inherit", "inherit", "inherit"] });
+  const own = flag(["--restore", "--profile", "--state", "--auto-connect", "--proxy"]);
+  const launch = own ? [] : await launchFlags(bin, { restore: LOGIN_STATE, proxy: settings.proxy });
+  const proc = Bun.spawn([process.execPath, bin, ...session, ...launch, ...args], {
+    env: browserEnv(own ? undefined : settings.proxy),
+    stdio: ["inherit", "inherit", "inherit"],
+  });
   process.exit(await proc.exited);
 }
 
@@ -281,7 +301,8 @@ if (process.argv[2] === "login" || process.argv[2] === "logout") {
     console.error("agent-browser is not installed.");
     process.exit(1);
   }
-  const run = (args: string[]) => Bun.spawn([process.execPath, bin, ...args], { stdio: ["inherit", "inherit", "inherit"] }).exited;
+  const run = (args: string[]) =>
+    Bun.spawn([process.execPath, bin, ...args], { env: browserEnv(settings.proxy), stdio: ["inherit", "inherit", "inherit"] }).exited;
   if (process.argv[2] === "logout") process.exit(await run(["state", "clear", LOGIN_STATE]));
   const url = pageUrl.safeParse(process.argv[3]);
   if (!url.success) {
@@ -352,14 +373,30 @@ if (command === "search" && !values.help) {
   print(result);
   if (!result.success) process.exitCode = 1;
 } else if (command === "setup" && !values.help) {
-  console.log((await setup(values.agent, values.remove === true)).join("\n"));
+  const [target, ...params] = rest;
+  const remove = values.remove === true;
+  let outcome: SetupResult;
+  if (target === "proxy") outcome = setProxy(params[0], remove);
+  else if (target === "key") outcome = await setKey(params[0], params[1], remove);
+  else outcome = { ok: true, lines: await setup(values.agent, remove) };
+  console.log(outcome.lines.join("\n"));
+  if (!outcome.ok) process.exitCode = 1;
 } else if (command === "check" && !values.help) {
-  const results = await checkProviders();
+  const results = await checkProviders(env, settings.proxy);
   const broken = results.filter((result) => result.status === "broken");
   print({ success: broken.length === 0, data: results });
   if (broken.length > 0) process.exitCode = 1;
 } else if (command === "providers") {
-  print({ success: true, data: { search: searcher.status(), fetch: fetcher.status() } });
+  const viaProxy = <T extends { kind: Parameters<typeof usesProxy>[0] }>(rows: T[]) =>
+    rows.map((row) => ({ ...row, proxy: Boolean(settings.proxy) && usesProxy(row.kind) }));
+  print({
+    success: true,
+    data: {
+      proxy: settings.proxy ? maskProxy(settings.proxy) : null,
+      search: viaProxy(searcher.status()),
+      fetch: viaProxy(fetcher.status()),
+    },
+  });
 } else if (command === "mcp") {
   await serveMcp();
 } else {

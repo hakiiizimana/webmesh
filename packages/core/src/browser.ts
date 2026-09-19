@@ -1,3 +1,4 @@
+import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { z } from "zod";
 
@@ -16,6 +17,12 @@ const SECRET_VALUES = [
   /\bBearer\s+[A-Za-z0-9._~+/-]+=*/gi,
 ];
 const REDACTED = "[redacted]";
+const PROXY_ENV = /^(https?_proxy|all_proxy|no_proxy|agent_browser_proxy(_bypass)?)$/i;
+
+const savedLogin = z.object({
+  cookies: z.array(z.object({ domain: z.string() })).default([]),
+  origins: z.array(z.object({ origin: z.string() })).default([]),
+});
 
 const browserData = z.record(z.string(), z.json());
 const output = z.object({ success: z.boolean(), data: browserData.nullish(), error: z.string().nullish() });
@@ -83,11 +90,59 @@ export function parseOutput(stdout: string, stderr: string, exitCode: number): B
   return { success: false, error: hint((stderr || stdout).trim().split("\n")[0] ?? `agent-browser exited with ${exitCode}`) };
 }
 
-type BrowserOptions = { restore?: string; redact?: boolean };
+export function bypassFor(states: string[]): string[] | undefined {
+  const hosts = new Set<string>();
+  for (const text of states) {
+    let state;
+    try {
+      state = savedLogin.safeParse(JSON.parse(text));
+    } catch {
+      return undefined;
+    }
+    if (!state.success) return undefined;
+    for (const cookie of state.data.cookies) hosts.add(cookie.domain.replace(/^\./, ""));
+    for (const origin of state.data.origins) {
+      const host = URL.parse(origin.origin)?.hostname;
+      if (host) hosts.add(host);
+    }
+  }
+  return [...hosts].sort().flatMap((host) => [host, `*.${host}`]);
+}
 
-export function createBrowser(session: string, { restore, redact: hide = false }: BrowserOptions = {}) {
+async function loginBypass(bin: string): Promise<string[] | undefined> {
+  try {
+    const proc = Bun.spawn([process.execPath, bin, "--json", "state", "list"], { stdin: "ignore", stdout: "pipe", stderr: "ignore" });
+    const listed = parseOutput(await new Response(proc.stdout).text(), "", await proc.exited);
+    const dir = z.object({ directory: z.string() }).safeParse(listed.success ? listed.data : null);
+    if (!dir.success) return undefined;
+    const files = readdirSync(dir.data.directory).filter((file) => file.startsWith(`${LOGIN_STATE}-`) && file.endsWith(".json"));
+    return bypassFor(files.map((file) => readFileSync(join(dir.data.directory, file), "utf8")));
+  } catch {
+    return undefined;
+  }
+}
+
+// Sites you logged into always go direct: a login used from a proxy IP gets challenged or locked.
+export async function launchFlags(bin: string, { restore, proxy }: { restore?: string; proxy?: string }): Promise<string[]> {
+  const flags = restore ? ["--restore", restore, "--restore-save", "never"] : [];
+  if (!proxy) return flags;
+  const bypass = restore ? await loginBypass(bin) : [];
+  if (bypass === undefined) return flags;
+  flags.push("--proxy", proxy);
+  if (bypass.length > 0) flags.push("--proxy-bypass", bypass.join(","));
+  return flags;
+}
+
+export function browserEnv(proxy: string | undefined): Record<string, string | undefined> {
+  if (!proxy) return process.env;
+  return Object.fromEntries(Object.entries(process.env).filter(([name]) => !PROXY_ENV.test(name)));
+}
+
+type BrowserOptions = { restore?: string; redact?: boolean; proxy?: string };
+
+export function createBrowser(session: string, { restore, redact: hide = false, proxy }: BrowserOptions = {}) {
   let used = false;
-  const launch = restore ? ["--restore", restore, "--restore-save", "never"] : [];
+  let launch: Promise<string[]> | undefined;
   let queue: Promise<BrowserResult | undefined> = Promise.resolve(undefined);
 
   // One page, one command at a time: parallel tool calls would race each other.
@@ -104,7 +159,9 @@ export function createBrowser(session: string, { restore, redact: hide = false }
       return { success: false, error: "webmesh manages the browser session; drop --session." };
     }
     used = true;
-    const proc = Bun.spawn([process.execPath, bin, "--json", "--session", session, ...launch, ...args.filter((arg) => arg !== "--json")], {
+    const flags = await (launch ??= launchFlags(bin, { restore, proxy }));
+    const proc = Bun.spawn([process.execPath, bin, "--json", "--session", session, ...flags, ...args.filter((arg) => arg !== "--json")], {
+      env: browserEnv(proxy),
       stdin: "ignore",
       stdout: "pipe",
       stderr: "pipe",

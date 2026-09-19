@@ -96,7 +96,7 @@ test("builds Parallel deep search filters", () => {
 });
 
 test("routes YouTube only for supported video filters", () => {
-  expect(providers.youtube.kind).toBe("public");
+  expect(providers.youtube.kind).toBe("scrape");
   expect(providers.youtube.supports?.({ type: "news" })).toBe(false);
   expect(providers.youtube.supports?.({ type: "web" })).toBe(false);
   expect(providers.youtube.supports?.({ type: "video" })).toBe(true);

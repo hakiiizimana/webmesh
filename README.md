@@ -36,7 +36,9 @@ Cursor, in `~/.cursor/mcp.json`:
 { "mcpServers": { "webmesh": { "command": "webmesh", "args": ["mcp"] } } }
 ```
 
-No API keys needed. To add a paid provider, set its key in the server's environment and it joins as a fallback. `webmesh providers` prints the variable each one reads.
+No API keys needed. To add a paid provider, save its key with `webmesh setup key <NAME>` and it joins as a fallback. `webmesh providers` prints the variable each one reads.
+
+Getting blocked? `webmesh setup proxy <url>` sends scrapers, local fetches, and anonymous browsing through a proxy. Sites you logged into and API calls stay direct, so logins don't get flagged.
 
 webmesh ships its own copy of [agent-browser](https://agent-browser.dev) and drives the Chrome or Chromium you already have. With neither installed, run `webmesh browser install`. Run `webmesh login <url>` once to log in to a site, and browser sessions start logged in after that.
 

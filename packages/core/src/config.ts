@@ -133,7 +133,7 @@ type Scrape = {
 };
 
 type Custom = {
-  kind: "public";
+  kind: "public" | "scrape";
   search: Provider["search"];
   supports?: FilterSupport;
 };
@@ -456,7 +456,7 @@ export const providers = {
     supports: braveSupports,
   },
   youtube: {
-    kind: "public",
+    kind: "scrape",
     search: searchYoutube,
     supports: youtubeSupports,
   },

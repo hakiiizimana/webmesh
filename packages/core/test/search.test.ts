@@ -231,6 +231,22 @@ describe("router", () => {
     expect(result.success && result.data.map((found) => found.url)).toEqual(["https://docs.sqlite.org/wal"]);
   });
 
+  test("sends only scrapers through the proxy", async () => {
+    const seen: Record<string, string | undefined> = {};
+    const provider = (kind: Provider["kind"], answer: boolean): Provider => ({
+      kind,
+      async search(_query, context) {
+        seen[kind] = context.proxy;
+        return answer ? [item("https://x.com")] : [];
+      },
+    });
+    const registry = { scraper: provider("scrape", false), api: provider("public", true) };
+    const router = createSearch(registry, { store: memoryStore(), env: {}, random: () => 0, proxy: "http://proxy:8000" });
+    await router.search("q-2");
+
+    expect(seen).toEqual({ scrape: "http://proxy:8000", public: undefined });
+  });
+
   test("filters set to their defaults do not rule providers out", async () => {
     const plain = Object.assign(fake([item("https://p.com")]), {
       supports: (filters: SearchFilters) => Object.keys(filters).length === 0,

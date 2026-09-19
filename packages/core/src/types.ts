@@ -43,6 +43,7 @@ export type SearchContext = {
   signal: AbortSignal;
   key: string;
   filters: SearchFilters;
+  proxy?: string;
 };
 
 export type ProviderKind = "api" | "mcp" | "public" | "scrape" | "local" | "browser";

@@ -66,6 +66,8 @@ function httpCooldown(err: HttpError): number {
   return 0;
 }
 
+export const usesProxy = (kind: ProviderKind) => kind === "scrape" || kind === "local" || kind === "browser";
+
 const tier = ({ kind, env }: Routable) => (kind === "local" ? 0 : kind === "browser" ? 1 : env ? 3 : 2);
 
 export function createRouter<R extends Record<string, Routable>>(

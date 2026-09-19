@@ -84,6 +84,23 @@ test("tries the local fetch, then the browser, then remote readers, and skips a 
   expect(missing.calls).toHaveLength(0);
 });
 
+test("only the local fetch and the browser use the proxy; readers go direct", async () => {
+  const seen: Record<string, string | undefined> = {};
+  const spy = (kind: Fetcher["kind"], result: FetchedPage | Error): Fetcher => ({
+    kind,
+    formats: ["markdown"],
+    async fetch(_url, context) {
+      seen[kind] = context.proxy;
+      if (result instanceof Error) throw result;
+      return result;
+    },
+  });
+  const registry = { reader: spy("public", page("ok")), direct: spy("local", new Error("too little content")) };
+  await createFetch(registry, { store: memoryStore(), env: {}, random: () => 0, proxy: "http://proxy:8000" }).fetch("https://a.com");
+
+  expect(seen).toEqual({ local: "http://proxy:8000", public: undefined });
+});
+
 test("a failed page does not cool the reader down", async () => {
   const reader = fetcher(new TargetError("page returned HTTP 404"));
   const { fetch } = setup({ reader });

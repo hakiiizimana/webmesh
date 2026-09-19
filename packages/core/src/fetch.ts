@@ -5,7 +5,7 @@ import { clean } from "./html";
 import { request } from "./http";
 import { callMcp } from "./mcp";
 import { publishedDate } from "./parser";
-import { createRouter, type Routed, type RouterOptions, TargetError } from "./router";
+import { createRouter, type Routed, type RouterOptions, TargetError, usesProxy } from "./router";
 import type { ProviderKind } from "./types";
 
 const BUDGET_MS = 30_000;
@@ -17,7 +17,7 @@ export type PageFormat = "markdown" | "html";
 
 export type FetchedPage = { url: string; title: string; content: string; publishedAt?: string };
 
-export type FetchContext = { format: PageFormat; maxCharacters: number; signal: AbortSignal; key: string };
+export type FetchContext = { format: PageFormat; maxCharacters: number; signal: AbortSignal; key: string; proxy?: string };
 
 export type Fetcher = {
   kind: ProviderKind;
@@ -46,10 +46,11 @@ export async function pageFromHtml(html: string, url: string, format: PageFormat
   return { url, title, content: page.content, publishedAt: publishedDate(page.published) };
 }
 
-async function fetchDirect(url: string, { format, signal }: FetchContext): Promise<FetchedPage> {
+async function fetchDirect(url: string, { format, signal, proxy }: FetchContext): Promise<FetchedPage> {
   const res = await request(url, {
     signal,
     browser: true,
+    proxy,
     headers: { accept: "text/html,application/xhtml+xml;q=0.9,text/plain;q=0.8,*/*;q=0.5" },
   });
   const type = res.headers.get("content-type") ?? "";
@@ -62,8 +63,8 @@ async function fetchDirect(url: string, { format, signal }: FetchContext): Promi
 const openedPage = z.object({ title: z.string().optional(), url: z.string().optional() });
 const readPage = z.object({ content: z.string(), status: z.number().nullish() });
 
-async function fetchInBrowser(url: string, { signal }: FetchContext): Promise<FetchedPage> {
-  const browser = createBrowser(`webmesh-fetch-${crypto.randomUUID().slice(0, 8)}`);
+async function fetchInBrowser(url: string, { signal, proxy }: FetchContext): Promise<FetchedPage> {
+  const browser = createBrowser(`webmesh-fetch-${crypto.randomUUID().slice(0, 8)}`, { proxy });
   try {
     const opened = await browser.run(["open", url], signal);
     if (!opened.success) throw new Error(opened.error);
@@ -198,7 +199,7 @@ export const isFetcherId = (id: string): id is FetcherId => Object.hasOwn(fetche
 
 type FetchOptions<Id> = { format?: PageFormat; maxCharacters?: number; only?: Id[] };
 
-export function createFetch<R extends Record<string, Fetcher>>(registry: R, options: RouterOptions) {
+export function createFetch<R extends Record<string, Fetcher>>(registry: R, options: RouterOptions & { proxy?: string }) {
   type Id = keyof R & string;
   const router = createRouter("fetch", registry, options, { budgetMs: BUDGET_MS, hedgeMs: HEDGE_MS });
 
@@ -219,7 +220,8 @@ export function createFetch<R extends Record<string, Fetcher>>(registry: R, opti
 
     return router.route(ready, {
       call: async (id, key, signal): Promise<Page> => {
-        const page = await router.get(id).fetch(url, { format, maxCharacters, signal, key });
+        const proxy = usesProxy(router.get(id).kind) ? options.proxy : undefined;
+        const page = await router.get(id).fetch(url, { format, maxCharacters, signal, key, proxy });
         const content = page.content.trim();
         return { ...page, format, content: content.slice(0, maxCharacters), truncated: content.length > maxCharacters };
       },

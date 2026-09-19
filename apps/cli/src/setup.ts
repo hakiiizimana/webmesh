@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { keyNames, loadSettings, maskProxy, proxyUrl, saveSettings, settingsPath } from "@webmesh/core";
 import { z } from "zod";
 
 const NAME = "webmesh";
@@ -98,4 +99,50 @@ export async function setup(only: string | undefined, remove: boolean): Promise<
   }
   if (!remove) lines.push("", "Restart your agents to load webmesh.");
   return lines;
+}
+
+export type SetupResult = { ok: boolean; lines: string[] };
+
+export function setProxy(url: string | undefined, remove: boolean): SetupResult {
+  const settings = loadSettings();
+  if (remove) {
+    delete settings.proxy;
+    saveSettings(settings);
+    return { ok: true, lines: ["Proxy removed. Everything goes direct."] };
+  }
+  const parsed = proxyUrl.safeParse(url);
+  if (!parsed.success) return { ok: false, lines: ["Usage: webmesh setup proxy http://user:pass@host:port"] };
+  settings.proxy = parsed.data;
+  saveSettings(settings);
+  return {
+    ok: true,
+    lines: [
+      `Proxy saved: ${maskProxy(parsed.data)}`,
+      "Scrapers, local fetches, and anonymous browsing go through it.",
+      "Sites you logged into with webmesh login, paid APIs, and free API endpoints stay direct.",
+    ],
+  };
+}
+
+export async function setKey(name: string | undefined, value: string | undefined, remove: boolean): Promise<SetupResult> {
+  const known = keyNames();
+  if (!name || !known.includes(name)) return { ok: false, lines: [`Use one of: ${known.join(", ")}.`] };
+  const settings = loadSettings();
+  if (remove) {
+    delete settings.keys[name];
+    saveSettings(settings);
+    return { ok: true, lines: [`${name} removed.`] };
+  }
+  let key = value;
+  if (!key) {
+    console.log(`Paste ${name} and press Enter:`);
+    for await (const line of console) {
+      key = line.trim();
+      break;
+    }
+  }
+  if (!key) return { ok: false, lines: ["No key given."] };
+  settings.keys[name] = key;
+  saveSettings(settings);
+  return { ok: true, lines: [`${name} saved to ${settingsPath()}. Restart your agents to use it.`] };
 }
