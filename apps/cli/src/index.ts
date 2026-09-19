@@ -21,6 +21,7 @@ import {
 } from "@webmesh/core";
 import { z } from "zod";
 import { version } from "../package.json";
+import { setup } from "./setup";
 
 const store = openStore();
 const searcher = createSearch(providers, { store, cache: store });
@@ -248,6 +249,9 @@ webmesh fetch <url>        fetch a page as markdown or HTML (JSON)
       --max-characters <n>   cut content at n characters (default 50000)
   -p, --providers <a,b>      only use these fetchers
 webmesh browser <command>    drive Chrome with agent-browser, e.g. open <url>, snapshot -i, click @e2
+webmesh setup                add webmesh to every coding agent found on this machine
+  -a, --agent <name>         only this agent (claude-code, codex, cursor, pi, opencode)
+      --remove               take webmesh out again
 webmesh login <url>          log in once in a visible browser; later browser sessions start logged in
 webmesh logout               forget saved logins
 webmesh providers            list search and fetch providers with cooldowns and health (JSON)
@@ -307,6 +311,8 @@ const { values, positionals } = parseArgs({
     "search-depth": { type: "string" },
     format: { type: "string" },
     "max-characters": { type: "string" },
+    agent: { type: "string", short: "a" },
+    remove: { type: "boolean" },
     help: { type: "boolean", short: "h" },
   },
 });
@@ -343,6 +349,8 @@ if (command === "search" && !values.help) {
   });
   print(result);
   if (!result.success) process.exitCode = 1;
+} else if (command === "setup" && !values.help) {
+  console.log((await setup(values.agent, values.remove === true)).join("\n"));
 } else if (command === "providers") {
   print({ success: true, data: { search: searcher.status(), fetch: fetcher.status() } });
 } else if (command === "mcp") {

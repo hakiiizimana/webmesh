@@ -14,7 +14,9 @@ bun add -g @webmesh/cli
 
 `npm install -g @webmesh/cli` works too. Either way, Bun has to be on your PATH.
 
-Then add it to your agent. Claude Code:
+Then run `webmesh setup`. It adds webmesh to every coding agent it finds on your machine.
+
+Or add it by hand. Claude Code:
 
 ```sh
 claude mcp add webmesh -s user -- webmesh mcp
@@ -36,7 +38,7 @@ Cursor, in `~/.cursor/mcp.json`:
 
 No API keys needed. To add a paid provider, set its key in the server's environment and it joins as a fallback. `webmesh providers` prints the variable each one reads.
 
-webmesh ships its own copy of [agent-browser](https://agent-browser.dev) and drives the Chrome or Chromium you already have. With neither installed, run `webmesh browser install`.
+webmesh ships its own copy of [agent-browser](https://agent-browser.dev) and drives the Chrome or Chromium you already have. With neither installed, run `webmesh browser install`. Run `webmesh login <url>` once to log in to a site, and browser sessions start logged in after that.
 
 ## Use it from the terminal
 
