@@ -4,7 +4,6 @@ export const searchItem = z.object({
   title: z.string(),
   url: z.string(),
   description: z.string(),
-  /** Publish date as YYYY-MM-DD, when the provider reports an absolute one. */
   publishedAt: z.string().optional(),
   durationSeconds: z.number().nullish(),
   channelUrl: z.string().nullish(),
@@ -13,7 +12,6 @@ export const searchItem = z.object({
 
 export type SearchItem = z.infer<typeof searchItem>;
 
-/** `provider` answered; `attempts` says what happened to each provider tried or skipped before it. */
 export const successfulSearch = z.object({
   success: z.literal(true),
   provider: z.string(),

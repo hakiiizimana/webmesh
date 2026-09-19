@@ -7,7 +7,6 @@ import type { Provider, SearchFilters, SearchItem } from "../src/types";
 
 const item = (url: string): SearchItem => ({ title: url, url, description: "" });
 
-/** A provider that plays its outcomes in order, repeating the last one. */
 function scripted(outcomes: Array<SearchItem[] | Error>, env?: string) {
   const calls: string[] = [];
   const provider: Provider = {
@@ -25,7 +24,6 @@ function scripted(outcomes: Array<SearchItem[] | Error>, env?: string) {
 
 const fake = (result: SearchItem[] | Error, env?: string) => scripted([result], env);
 
-/** A provider that never answers; it settles only when the search cancels it. */
 function hung() {
   const cancelled: boolean[] = [];
   const provider: Provider = {
@@ -45,7 +43,7 @@ function hung() {
   return Object.assign(provider, { cancelled });
 }
 
-/** Deterministic router: equal history keeps registry order, and retries don't wait. */
+// random 0 keeps registry order when history is equal.
 function setup<R extends Record<string, Provider>>(registry: R, overrides: Partial<Parameters<typeof createSearch>[1]> = {}) {
   return createSearch(registry, { store: memoryStore(), env: {}, random: () => 0, retryDelayMs: 0, ...overrides });
 }

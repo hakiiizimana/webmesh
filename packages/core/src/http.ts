@@ -10,7 +10,6 @@ export class HttpError extends Error {
   }
 }
 
-/** The request never got a response: DNS, connect, TLS, or reset. Safe to retry. */
 export class NetworkError extends Error {}
 
 export type Json = string | number | boolean | null | Json[] | { [key: string]: Json };

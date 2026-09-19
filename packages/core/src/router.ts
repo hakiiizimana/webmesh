@@ -7,36 +7,29 @@ const BLOCKED_MS = 10 * 60_000;
 const TRANSIENT_MS = 30_000;
 const RETRY_DELAY_MS = 400;
 
-/** The provider worked, but the page it was asked for failed (404, 403, ...). No cooldown, no health penalty. */
+// The provider worked but the page failed (404, 403, ...): no cooldown, no health penalty.
 export class TargetError extends Error {}
 
-/** What the router needs from a provider: how it's tiered and whether it needs a key. */
 export type Routable = { kind: ProviderKind; env?: string };
 
 export type RouterOptions = {
   store: StateStore;
   env?: Record<string, string | undefined>;
-  /** Total time one call may take across every provider it tries. */
   budgetMs?: number;
-  /** How long a provider may run before the next one starts alongside it. */
   hedgeMs?: number;
-  /** Base pause before the single retry on a network error or 5xx; jittered up to double. */
   retryDelayMs?: number;
   now?: () => number;
   random?: () => number;
 };
 
-/** `provider` answered; `attempts` says what happened to each provider tried or skipped before it. */
 export type Routed<T> = { success: true; provider: string; attempts: string[]; data: T } | { success: false; error: string };
 
-/** One routed call: what to ask each provider, and which answers count. `empty` names a rejected answer. */
 export type Task<Id, T> = {
   call: (id: Id, key: string, signal: AbortSignal) => Promise<T>;
   accept: (value: T) => boolean;
   empty: string;
 };
 
-/** Resolves after `ms`, or as soon as `signal` aborts. */
 export function pause(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
     const done = () => {
@@ -49,7 +42,6 @@ export function pause(ms: number, signal: AbortSignal): Promise<void> {
   });
 }
 
-/** Runs `call`, and once more after `delayMs` if it failed on the network or with a 5xx. */
 async function withRetry<T>(call: () => Promise<T>, delayMs: number, signal: AbortSignal): Promise<T> {
   try {
     return await call();
@@ -62,7 +54,7 @@ async function withRetry<T>(call: () => Promise<T>, delayMs: number, signal: Abo
   }
 }
 
-/** Reliability counts more than speed; the floor lets a struggling provider still earn its way back. */
+// The 0.2 floor lets a struggling provider earn its way back.
 function weight({ success, latencyMs }: ProviderHealth): number {
   return Math.max(success, 0.2) ** 2 * (1_000 / Math.max(latencyMs, 250));
 }
@@ -74,15 +66,8 @@ function httpCooldown(err: HttpError): number {
   return 0;
 }
 
-/** Local providers first, then free ones, with keyed ones as the fallback. */
 const tier = ({ kind, env }: Routable) => (kind === "local" ? 0 : env ? 2 : 1);
 
-/**
- * Routes one kind of call (search, fetch) across a provider registry. Each call tries local and free
- * providers before keyed ones, favoring those that answer often and fast, starts the next provider
- * alongside a slow one, and gives up once the time budget is spent. Health and cooldowns are stored
- * under `operation/id`, so a service used for both search and fetch keeps separate records.
- */
 export function createRouter<R extends Record<string, Routable>>(
   operation: string,
   registry: R,
@@ -112,7 +97,6 @@ export function createRouter<R extends Record<string, Routable>>(
   };
   const isReady = (id: Id) => !get(id).env || keyFor(id) !== "";
 
-  /** Tiers first; within a tier, a shuffle weighted by health. */
   const rank = (candidates: Id[], state: RoutingState): Id[] =>
     candidates
       .map((id) => ({
@@ -123,7 +107,6 @@ export function createRouter<R extends Record<string, Routable>>(
       .sort((a, b) => a.tier - b.tier || b.key - a.key)
       .map(({ id }) => id);
 
-  /** One provider's turn. Records its health and cooldown unless the call was already settled. */
   async function attempt<T>(id: Id, task: Task<Id, T>, signal: AbortSignal): Promise<Outcome<T>> {
     const startedAt = performance.now();
     try {
@@ -141,13 +124,12 @@ export function createRouter<R extends Record<string, Routable>>(
       if (err instanceof TargetError) return { id, failure };
       store.observe(stateKey(id), { success: 0 });
       const ms = err instanceof HttpError ? httpCooldown(err) : err instanceof SoftBlockError ? BLOCKED_MS : TRANSIENT_MS;
-      // A local provider's errors come from the page it fetched, not from the provider.
+      // A local provider's errors come from the page, not the provider.
       if (ms > 0 && get(id).kind !== "local") store.bench(stateKey(id), now() + ms);
       return { id, failure };
     }
   }
 
-  /** Runs `task` across `candidates` until one answers, and says what happened to the rest. */
   async function route<T>(candidates: Id[], task: Task<Id, T>): Promise<Routed<T>> {
     const state = store.load();
     const cooling = candidates.filter((id) => (state.benched[stateKey(id)] ?? 0) > now());
@@ -192,13 +174,12 @@ export function createRouter<R extends Record<string, Routable>>(
       return { success: false, error: `All providers failed. ${failures.join("; ")}` };
     } finally {
       clearTimeout(budget);
-      // Providers still running lost the race; their elapsed time still counts against their speed.
+      // Losers still count their elapsed time against their speed.
       for (const [id, run] of running) store.observe(stateKey(id), { latencyMs: performance.now() - run.startedAt });
       stop.abort();
     }
   }
 
-  /** Readiness, cooldown, and health per provider. `successRate` and `latencyMs` are null until it has been tried. */
   function status() {
     const state = store.load();
     return ids.map((id) => {

@@ -12,10 +12,6 @@ const toolResponse = z.object({
   error: z.object({ message: z.string() }).optional(),
 });
 
-/**
- * Calls one tool on a remote MCP server over streamable HTTP, without a session.
- * Returns the tool's text, or its structured content as JSON when `preferStructured` is set.
- */
 export async function callMcp(
   url: string,
   name: string,

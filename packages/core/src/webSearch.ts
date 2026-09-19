@@ -71,11 +71,9 @@ export const providers = {
 } satisfies { [K in ProviderId]: Provider };
 
 type SearchOptions = RouterOptions & {
-  /** Where results are cached. Defaults to an in-process cache. */
   cache?: CacheStore;
 };
 
-/** Drops filter values every provider already uses by default, so they don't rule providers out. */
 function withoutDefaults(filters: SearchFilters): SearchFilters {
   const normalized = { ...filters };
   if (normalized.type === "web") delete normalized.type;
@@ -83,7 +81,6 @@ function withoutDefaults(filters: SearchFilters): SearchFilters {
   return normalized;
 }
 
-/** Keeps results inside includeDomains and outside excludeDomains, whatever the provider did with them. */
 function inDomains(url: string, filters: SearchFilters): boolean {
   const host = URL.parse(url)?.hostname ?? "";
   const matches = (domain: string) => host === domain || host.endsWith(`.${domain}`);
@@ -148,7 +145,6 @@ function cacheKey(query: string, limit: number, providerIds: readonly string[], 
   });
 }
 
-/** Search on top of the router: filter checks, domain safety net, and a result cache. */
 export function createSearch<R extends Record<string, Provider>>(registry: R, options: SearchOptions) {
   type Id = keyof R & string;
   const router = createRouter("search", registry, options, { budgetMs: BUDGET_MS, hedgeMs: HEDGE_MS });

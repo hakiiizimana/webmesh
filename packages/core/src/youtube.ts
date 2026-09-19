@@ -340,7 +340,6 @@ const uploadDateValue = (freshness: SearchFilters["freshness"]): number => {
   }
 };
 
-/** Encodes the same InnerTube SearchProto used by Stophy's YouTube search path. */
 export const youtubeSearchParamsFor = (filters: SearchFilters): string => {
   const filterBytes: number[] = [];
   const uploadDate = uploadDateValue(filters.freshness);

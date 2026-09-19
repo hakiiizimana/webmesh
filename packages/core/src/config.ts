@@ -295,7 +295,6 @@ function braveUrl(query: string, limit: number, filters: SearchFilters): string 
   return `https://api.search.brave.com/res/v1/${endpoint}/search?${params}`;
 }
 
-/** The scrapers take only the preset windows (day/week/month/year) as URL params, not date ranges. */
 function presetFreshness(filters: SearchFilters): boolean {
   return filters.freshness === undefined || !isFreshnessRange(filters.freshness);
 }
@@ -314,7 +313,6 @@ function braveWebSupports(filters: SearchFilters): boolean {
 const DUCKDUCKGO_FRESHNESS = { day: "d", week: "w", month: "m", year: "y" } as const;
 const DUCKDUCKGO_SAFE_SEARCH = { strict: "1", moderate: "-1", off: "-2" } as const;
 
-/** Domains and exact match go into the query as operators; freshness and safe search are URL params. */
 function duckduckgoParams(query: string, filters: SearchFilters): URLSearchParams {
   const params = new URLSearchParams({ q: queryWithOperators(query, filters, true) });
   if (filters.freshness !== undefined && !isFreshnessRange(filters.freshness)) {
@@ -340,7 +338,6 @@ function youtubeSupports(filters: SearchFilters): boolean {
   );
 }
 
-/** `env` means the provider joins only when that var is set, and is tried only after the free ones. */
 export const providers = {
   "parallel-mcp": {
     kind: "mcp",
