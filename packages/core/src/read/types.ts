@@ -1,5 +1,4 @@
 import type { ResolveAddresses } from "../network";
-import type { Routed } from "../router";
 import type { ProviderKind } from "../shared/provider-kind";
 import type { YtDlpMetadata } from "./providers/ytDlp";
 
@@ -28,4 +27,4 @@ export type Fetcher = {
 
 export type Page = FetchedPage & { format: PageFormat; truncated: boolean };
 
-export type FetchResult = Routed<Page>;
+export type FetchResult = { success: true; data: Page } | { success: false; error: string };

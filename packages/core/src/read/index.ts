@@ -75,7 +75,7 @@ export function createFetch<R extends Record<string, Fetcher>>(
       };
     }
 
-    return router.route(ready, {
+    const result = await router.route(ready, {
       call: async (id, key, signal): Promise<Page> => {
         const proxy = usesProxy(router.get(id).kind) ? options.proxy : undefined;
         const page = await router.get(id).fetch(url, {
@@ -93,6 +93,7 @@ export function createFetch<R extends Record<string, Fetcher>>(
       accept: (page) => page.content.length > 0,
       empty: "empty page",
     });
+    return result.success ? { success: true, data: result.data } : result;
   }
 
   return { fetch: fetchPage, status: router.status };

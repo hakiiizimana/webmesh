@@ -80,7 +80,7 @@ test("falls back to a reader when the local fetch fails, and never cools the loc
   const first = await fetch("https://a.com");
   await fetch("https://a.com");
 
-  expect(first).toMatchObject({ success: true, provider: "reader", attempts: ["direct: HTTP 403"] });
+  expect(first).toMatchObject({ success: true, data: { content: "from reader" } });
   expect(registry.direct.calls).toHaveLength(2);
 });
 
@@ -95,8 +95,8 @@ test("tries the local fetch, then the browser, then remote readers, and skips a 
   const rendered = await setup(registry).fetch("https://app.example");
   const skipped = await setup({ reader: registry.reader, missing }).fetch("https://app.example");
 
-  expect(rendered).toMatchObject({ success: true, provider: "browser", attempts: ["direct: too little content"] });
-  expect(skipped).toMatchObject({ success: true, provider: "reader" });
+  expect(rendered).toMatchObject({ success: true, data: { content: "rendered" } });
+  expect(skipped).toMatchObject({ success: true, data: { content: "from reader" } });
   expect(missing.calls).toHaveLength(0);
 });
 
@@ -137,7 +137,7 @@ test("only asks fetchers that can return the requested format", async () => {
   const registry = { markdownOnly: fetcher(page("md"), "mcp", ["markdown"]), both: fetcher(page("<p>html</p>")) };
   const result = await setup(registry).fetch("https://a.com", { format: "html" });
 
-  expect(result).toMatchObject({ success: true, provider: "both" });
+  expect(result).toMatchObject({ success: true, data: { content: "<p>html</p>" } });
   expect(registry.markdownOnly.calls).toHaveLength(0);
 });
 
@@ -224,7 +224,6 @@ test("preserves markdown responses from direct fetch without modifying markdown 
 
     expect(result).toMatchObject({
       success: true,
-      provider: "direct",
       data: {
         content: rawMarkdown,
         format: "markdown",
@@ -281,7 +280,6 @@ test("normalizes xhtml responses using html parser", async () => {
 
     expect(result).toMatchObject({
       success: true,
-      provider: "direct",
       data: {
         title: "XHTML Spec",
         format: "markdown",
@@ -314,8 +312,6 @@ test("local direct fetch rejects PDFs as unreadable locally and falls back to a 
 
     expect(result).toMatchObject({
       success: true,
-      provider: "reader",
-      attempts: [expect.stringContaining("direct: can't read application/pdf locally")],
       data: { content: "extracted pdf text content" },
     });
     expect(reader.calls).toHaveLength(1);
@@ -455,7 +451,6 @@ test("allows following manual redirects to internal endpoints when allowPrivateN
 
     expect(result).toMatchObject({
       success: true,
-      provider: "direct",
       data: {
         url: `http://127.0.0.1:${destination.port}/doc`,
         title: "Internal Doc",
@@ -515,8 +510,6 @@ test("produces clean public page data with trimmed content and correct shape", a
 
   expect(result).toEqual({
     success: true,
-    provider: "messyPage",
-    attempts: [],
     data: {
       url: "https://clean.example/page",
       title: "Clean Public Title",
