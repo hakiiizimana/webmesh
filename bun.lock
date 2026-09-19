@@ -20,7 +20,7 @@
       },
       "dependencies": {
         "agent-browser": "0.38.1",
-        "impit": "^0.14.4",
+        "wreq-js": "^3.2.0",
       },
       "devDependencies": {
         "@modelcontextprotocol/sdk": "^1.30.0",
@@ -253,24 +253,6 @@
     "http-errors": ["http-errors@2.0.1", "", { "dependencies": { "depd": "~2.0.0", "inherits": "~2.0.4", "setprototypeof": "~1.2.0", "statuses": "~2.0.2", "toidentifier": "~1.0.1" } }, "sha512-4FbRdAX+bSdmo4AUFuS0WNiPz8NgFt+r8ThgNWmlrjQjt1Q7ZR9+zTlce2859x4KSXrwIsaeTqDoKQmtP8pLmQ=="],
 
     "iconv-lite": ["iconv-lite@0.7.3", "", { "dependencies": { "safer-buffer": ">= 2.1.2 < 3.0.0" } }, "sha512-IKXpvIzjnC9XTAUbVBcMfGS0EPaIXtW6v+zr+RRp+hqULEpo0owZax6wyRwPOJbWbzjYspQwusTsfVr0ifh4uQ=="],
-
-    "impit": ["impit@0.14.5", "", { "optionalDependencies": { "impit-darwin-arm64": "0.14.5", "impit-darwin-x64": "0.14.5", "impit-linux-arm64-gnu": "0.14.5", "impit-linux-arm64-musl": "0.14.5", "impit-linux-x64-gnu": "0.14.5", "impit-linux-x64-musl": "0.14.5", "impit-win32-arm64-msvc": "0.14.5", "impit-win32-x64-msvc": "0.14.5" } }, "sha512-MzoDiPBL5+QI5IEro4VDgZdm0BPY0LIf8tUykEFDjEI8NrjRL/qiiCqg4GDlIg5UbJzrKwCdvIgpRRArbbu7Dg=="],
-
-    "impit-darwin-arm64": ["impit-darwin-arm64@0.14.5", "", { "os": "darwin", "cpu": "arm64" }, "sha512-9B2fc/GLfb14SgIB6fK1zIgMsXPjCu14Xu9hudSyrZF+ue6XaJXFF/G1BS27FtDFdPAYAeUTReFOJBrglteYKg=="],
-
-    "impit-darwin-x64": ["impit-darwin-x64@0.14.5", "", { "os": "darwin", "cpu": "x64" }, "sha512-EBH6H6SSRuMpw85/n+luT0EcbNbp6vQpUaEywH4bM2bk/xy8y6JN25O/Mzxa4YGUauoytmMqXs0kDzU5lxEjaA=="],
-
-    "impit-linux-arm64-gnu": ["impit-linux-arm64-gnu@0.14.5", "", { "os": "linux", "cpu": "arm64" }, "sha512-K7gB/KiekPZ+rDoFZqbBf1jROOHibZneGmM0lt/5xcn2lO+7e9GgArdPFj6sh4fvhtOckXxEc1ExpZP+lDy3Cg=="],
-
-    "impit-linux-arm64-musl": ["impit-linux-arm64-musl@0.14.5", "", { "os": "linux", "cpu": "arm64" }, "sha512-QvjBwjYu1LXP+ota94z9fThRZjH75/Bai36eHvXUTiiFyesRRsmClc72ReyyaarnNNjcsl2RActqFMDrx77DXg=="],
-
-    "impit-linux-x64-gnu": ["impit-linux-x64-gnu@0.14.5", "", { "os": "linux", "cpu": "x64" }, "sha512-+8hErR5H3+4N9r4vf5Cz6cSe57n/0zh5ksHBu2H9i5pENcM/VBRJ5qU5a3YjQwN4Ohtw/ROHBLF6V99eXUzThA=="],
-
-    "impit-linux-x64-musl": ["impit-linux-x64-musl@0.14.5", "", { "os": "linux", "cpu": "x64" }, "sha512-e6526hjfX8BV3XNhB1V7Xd3dJIEbLEwudZagwt4XdLqKcxHsU0iYnUyTJCogSQeEtZFepCSKUnGeg/r2lzxHow=="],
-
-    "impit-win32-arm64-msvc": ["impit-win32-arm64-msvc@0.14.5", "", { "os": "win32", "cpu": "arm64" }, "sha512-cABSwp3T1kNNp7++nyE8OlRuq8q9Cis3bWRHJjnTncfJ+NQlY0z1z3aLrI9ii1vvinCurCEWASuTptVSor5U1g=="],
-
-    "impit-win32-x64-msvc": ["impit-win32-x64-msvc@0.14.5", "", { "os": "win32", "cpu": "x64" }, "sha512-JvjNkJ3mSB9nf74Ftdlr+KNxCC0EOAH6KUfEUqWRrGEnniIaUOMknxQw56Gbk7Zr1/e5eAOwxS/EBlASp6Yj4w=="],
 
     "inherits": ["inherits@2.0.4", "", {}, "sha512-k/vGaX4/Yla3WzyMCvTQOXYeIHvqOKtnqBduzTHpzpQZzAskKMhZ2K+EnBiSM9zGSoIFeMpXKxa4dYeZIQqewQ=="],
 

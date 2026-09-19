@@ -18,14 +18,14 @@
     "access": "public"
   },
   "scripts": {
-    "build": "bun build src/index.ts --target bun --outfile dist/webmesh.js --external impit && mkdir -p dist/skills && cp -R ../../skills/* dist/skills/ && cp ../../README.md ../../LICENSE .",
+    "build": "bun build src/index.ts --target bun --outfile dist/webmesh.js --external wreq-js && mkdir -p dist/skills && cp -R ../../skills/* dist/skills/ && cp ../../README.md ../../LICENSE .",
     "check-types": "tsc --noEmit",
     "test": "bun test",
     "prepublishOnly": "bun run build"
   },
   "dependencies": {
     "agent-browser": "0.38.1",
-    "impit": "^0.14.4"
+    "wreq-js": "^3.2.0"
   },
   "devDependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
