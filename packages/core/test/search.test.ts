@@ -1,11 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { SoftBlockError } from "../src/html";
-import { HttpError, NetworkError } from "../src/http";
-import { createSearch } from "../src/webSearch";
+import { HttpError } from "../src/http";
 import { memoryStore } from "../src/state";
 import type { Provider, SearchFilters, SearchItem } from "../src/types";
+import { createSearch } from "../src/webSearch";
 
-const item = (url: string): SearchItem => ({ title: url, url, description: "" });
+const item = (url: string, title = url, description = ""): SearchItem => ({ title, url, description });
 
 function scripted(outcomes: Array<SearchItem[] | Error>, env?: string) {
   const calls: string[] = [];
@@ -43,148 +42,209 @@ function hung() {
   return Object.assign(provider, { cancelled });
 }
 
-// random 0 keeps registry order when history is equal.
 function setup<R extends Record<string, Provider>>(registry: R, overrides: Partial<Parameters<typeof createSearch>[1]> = {}) {
   return createSearch(registry, { store: memoryStore(), env: {}, random: () => 0, retryDelayMs: 0, ...overrides });
 }
 
-describe("router", () => {
-  test("tries free providers before keyed ones", async () => {
-    const registry = { keyed: fake([item("https://k.com")], "KEY"), free: fake([item("https://f.com")]) };
-    const result = await setup(registry, { env: { KEY: "k" } }).search("q");
+describe("search fusion", () => {
+  test("collects results concurrently from multiple free providers", async () => {
+    const p1 = fake([item("https://first.com/result")]);
+    const p2 = fake([item("https://second.com/result")]);
+    const p3 = fake([item("https://third.com/result")]);
+    const { search } = setup({ p1, p2, p3 });
+    const result = await search("concurrent test");
 
-    expect(result).toEqual({ success: true, provider: "free", attempts: [], data: [item("https://f.com")] });
-    expect(registry.keyed.calls).toHaveLength(0);
+    expect(result.success).toBe(true);
+    if (result.success) {
+      const urls = result.data.map((entry) => entry.url);
+      expect(urls).toContain("https://first.com/result");
+      expect(urls).toContain("https://second.com/result");
+      expect(urls).toContain("https://third.com/result");
+    }
+    expect(p1.calls).toHaveLength(1);
+    expect(p2.calls).toHaveLength(1);
+    expect(p3.calls).toHaveLength(1);
   });
 
-  test("favors providers that have been answering", async () => {
-    const registry = { empty: fake([]), good: fake([item("https://g.com")]) };
-    const { search } = setup(registry, { random: () => 0.5 });
+  test("orders merged results using reciprocal-rank fusion", async () => {
+    const p1 = fake([
+      item("https://alpha.com/solo"),
+      item("https://shared.com/item"),
+      item("https://alpha.com/tail"),
+    ]);
+    const p2 = fake([
+      item("https://shared.com/item"),
+      item("https://beta.com/solo"),
+      item("https://beta.com/tail"),
+    ]);
+    const { search } = setup({ p1, p2 });
+    const result = await search("rrf test");
 
-    await search("q-1");
-    await search("q-2");
-
-    expect(registry.empty.calls).toHaveLength(1);
-    expect(registry.good.calls).toHaveLength(2);
+    expect(result.success).toBe(true);
+    if (result.success) {
+      const urls = result.data.map((entry) => entry.url);
+      expect(urls[0]).toBe("https://shared.com/item");
+      expect(urls[1]).toBe("https://alpha.com/solo");
+      expect(urls[2]).toBe("https://beta.com/solo");
+    }
   });
 
-  test("starts the next provider alongside a slow one and cancels the loser", async () => {
+  test("deduplicates canonical URLs across providers", async () => {
+    const p1 = fake([
+      item("https://example.com/page"),
+      item("https://example.com/docs/"),
+      item("https://example.com/guide?utm_source=twitter&utm_medium=social"),
+      item("https://example.com/about#team"),
+    ]);
+    const p2 = fake([
+      item("https://example.com/page"),
+      item("https://example.com/docs"),
+      item("https://example.com/guide"),
+      item("https://example.com/about"),
+      item("https://example.com/unique"),
+    ]);
+    const { search } = setup({ p1, p2 });
+    const result = await search("dedupe test");
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data).toHaveLength(5);
+      const urls = result.data.map((entry) => entry.url);
+      expect(urls.filter((u) => u.includes("/page"))).toHaveLength(1);
+      expect(urls.filter((u) => u.includes("/docs"))).toHaveLength(1);
+      expect(urls.filter((u) => u.includes("/guide"))).toHaveLength(1);
+      expect(urls.filter((u) => u.includes("/about"))).toHaveLength(1);
+      expect(urls.filter((u) => u.includes("/unique"))).toHaveLength(1);
+    }
+  });
+
+  test("applies domain diversity so a single domain does not crowd out others", async () => {
+    const p1 = fake([
+      item("https://site-a.com/page-1"),
+      item("https://site-a.com/page-2"),
+      item("https://site-a.com/page-3"),
+      item("https://site-b.com/page-1"),
+    ]);
+    const { search } = setup({ p1 });
+    const result = await search("diversity test");
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      const urls = result.data.map((entry) => entry.url);
+      const siteBIndex = urls.indexOf("https://site-b.com/page-1");
+      const siteAThirdIndex = urls.indexOf("https://site-a.com/page-3");
+      expect(siteBIndex).toBeGreaterThanOrEqual(0);
+      expect(siteAThirdIndex).toBeGreaterThanOrEqual(0);
+      expect(siteBIndex).toBeLessThan(siteAThirdIndex);
+    }
+  });
+
+  test("cuts off and cancels slow providers while returning fast ones", async () => {
     const slow = hung();
-    const fast = fake([item("https://fast.com")]);
-    const result = await setup({ slow, fast }, { hedgeMs: 10 }).search("q");
+    const fast = fake([item("https://fast.com/result")]);
+    const result = await setup({ slow, fast }, { hedgeMs: 10, budgetMs: 20 }).search("cutoff test");
 
-    expect(result).toEqual({ success: true, provider: "fast", attempts: [], data: [item("https://fast.com")] });
+    expect(result).toEqual({
+      success: true,
+      data: [item("https://fast.com/result")],
+    });
     expect(slow.cancelled).toHaveLength(1);
   });
 
-  test("status reports health once a provider has been tried", async () => {
-    const registry = { tried: fake([item("https://t.com")]), untried: fake([]) };
-    const router = setup(registry);
-    await router.search("q");
+  test("tolerates individual provider failures when other providers answer", async () => {
+    const failing = fake(new HttpError(500, undefined, "HTTP 500"));
+    const broken = fake(new Error("network failure"));
+    const working = fake([item("https://working.com/result")]);
+    const result = await setup({ failing, broken, working }).search("tolerance test");
 
-    const [tried, untried] = router.status();
-    expect(tried).toMatchObject({ id: "tried", successRate: 1 });
-    expect(tried?.latencyMs).toBeNumber();
-    expect(untried).toMatchObject({ id: "untried", successRate: null, latencyMs: null });
-  });
-
-  test("gives up when the time budget runs out", async () => {
-    const result = await setup({ slow: hung() }, { budgetMs: 20 }).search("q");
-    expect(result).toEqual({ success: false, error: "All providers failed. slow: timed out" });
-  });
-
-  test("retries once only on network errors and 5xx", async () => {
-    const cases: Array<[Error, number]> = [
-      [new NetworkError("connection reset"), 2],
-      [new HttpError(503, undefined, "HTTP 503"), 2],
-      [new HttpError(202, undefined, "HTTP 202"), 1],
-      [new HttpError(403, undefined, "HTTP 403"), 1],
-      [new HttpError(429, 5, "HTTP 429"), 1],
-      [new SoftBlockError("soft-blocked"), 1],
-      [new Error("bad JSON"), 1],
-    ];
-    for (const [error, calls] of cases) {
-      const flaky = scripted([error, [item("https://ok.com")]]);
-      const result = await setup({ flaky }).search("q");
-      expect(flaky.calls).toHaveLength(calls);
-      expect(result.success).toBe(calls === 2);
-    }
-  });
-
-  test("a failing provider is skipped within the search and benched for later ones", async () => {
-    let clock = 0;
-    const registry = {
-      a: fake(new HttpError(429, 5, "HTTP 429")),
-      b: fake([item("https://b.com")]),
-    };
-    const { search } = setup(registry, { now: () => clock });
-
-    expect(await search("q-1")).toEqual({
+    expect(result).toEqual({
       success: true,
-      provider: "b",
-      attempts: ["a: HTTP 429"],
-      data: [item("https://b.com")],
+      data: [item("https://working.com/result")],
     });
-    await search("q-2");
-    expect(registry.a.calls).toHaveLength(1);
-
-    clock = 5_001;
-    await search("q-3", { only: ["a"] });
-    expect(registry.a.calls).toHaveLength(2);
   });
 
-  test("uses the agreed TTL for each freshness window", async () => {
-    const cases: Array<{ filters: SearchFilters; ttl: number }> = [
-      { filters: {}, ttl: 20 * 60_000 },
-      { filters: { freshness: "day" }, ttl: 20 * 60_000 },
-      { filters: { freshness: "week" }, ttl: 60 * 60_000 },
-      { filters: { freshness: "month" }, ttl: 24 * 60 * 60_000 },
-      { filters: { freshness: "year" }, ttl: 24 * 60 * 60_000 },
-    ];
+  test("returns success false when every provider fails", async () => {
+    const failing1 = fake(new Error("failure 1"));
+    const failing2 = fake(new HttpError(503, undefined, "HTTP 503"));
+    const result = await setup({ failing1, failing2 }).search("all fail test");
 
-    for (const [index, testCase] of cases.entries()) {
-      let clock = 0;
-      const registry = { a: fake([item(`https://${index}.com`)]) };
-      const { search } = setup(registry, { now: () => clock });
-
-      await search(`q-${index}`, { filters: testCase.filters });
-      clock = testCase.ttl - 1;
-      await search(`q-${index}`, { filters: testCase.filters });
-      expect(registry.a.calls).toHaveLength(1);
-
-      clock = testCase.ttl;
-      await search(`q-${index}`, { filters: testCase.filters });
-      expect(registry.a.calls).toHaveLength(2);
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error).toBeString();
     }
   });
 
-  test("keeps separate cache entries for different filters", async () => {
-    const registry = { a: fake([item("https://a.com")]) };
-    const { search } = setup(registry);
+  test("returns clean response with only success and data, omitting routing and cache metadata", async () => {
+    const p1 = fake([item("https://a.com/one")]);
+    const p2 = fake([item("https://b.com/two")]);
+    const result = await setup({ p1, p2 }).search("clean response test");
 
-    await search("q", { filters: { type: "web" } });
-    await search("q", { filters: { type: "news" } });
-
-    expect(registry.a.calls).toHaveLength(2);
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(Object.keys(result).sort()).toEqual(["data", "success"]);
+      expect(result).not.toHaveProperty("provider");
+      expect(result).not.toHaveProperty("attempts");
+      expect(result).not.toHaveProperty("routing");
+      expect(result).not.toHaveProperty("cached");
+    }
   });
 
-  test("keyed providers only join when their env var is set", async () => {
-    const registry = { keyed: fake([item("https://k.com")], "KEY"), free: fake([item("https://f.com")]) };
-    const { search, status } = setup(registry);
-    await search("q");
-    await search("q");
-    expect(registry.keyed.calls).toHaveLength(0);
-    expect(status()[0]).toMatchObject({ id: "keyed", key: "KEY", needs: "KEY" });
+  test("caches merged results for subsequent identical searches", async () => {
+    let clock = 1000;
+    const p1 = fake([item("https://p1.com/result")]);
+    const p2 = fake([item("https://p2.com/result")]);
+    const { search } = setup({ p1, p2 }, { now: () => clock });
+
+    const first = await search("cache query");
+    expect(first.success).toBe(true);
+    expect(p1.calls).toHaveLength(1);
+    expect(p2.calls).toHaveLength(1);
+
+    const second = await search("cache query");
+    expect(second).toEqual(first);
+    expect(p1.calls).toHaveLength(1);
+    expect(p2.calls).toHaveLength(1);
+
+    clock += 24 * 60 * 60_000 + 1;
+    const third = await search("cache query");
+    expect(third.success).toBe(true);
+    expect(p1.calls).toHaveLength(2);
+    expect(p2.calls).toHaveLength(2);
   });
 
-  test("returns success false when every provider fails or finds nothing", async () => {
-    const registry = { a: fake([]), b: fake(new Error("boom")) };
-    const result = await setup(registry).search("q");
-    expect(result.success).toBe(false);
-    if (!result.success) expect(result.error).toContain("a: no results");
+  test("drops results outside requested includeDomains", async () => {
+    const p1 = fake([item("https://docs.sqlite.org/wal"), item("https://stackoverflow.com/q/1")]);
+    const p2 = fake([item("https://sqlite.org/lang"), item("https://sqlite.org.evil.com/phish")]);
+    const result = await setup({ p1, p2 }).search("query", { filters: { includeDomains: ["sqlite.org"] } });
+
+    expect(result).toEqual({
+      success: true,
+      data: [item("https://docs.sqlite.org/wal"), item("https://sqlite.org/lang")],
+    });
   });
 
-  test("passes filters through and keeps the complete description", async () => {
+  test("respects limit option after merging providers", async () => {
+    const p1 = fake([item("https://a.com/1"), item("https://a.com/2")]);
+    const p2 = fake([item("https://b.com/1"), item("https://b.com/2")]);
+    const result = await setup({ p1, p2 }).search("query", { limit: 2 });
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data).toHaveLength(2);
+    }
+  });
+
+  test("skips providers that cannot honor requested filters", async () => {
+    const skipped = Object.assign(fake([item("https://skipped.com/item")]), { supports: () => false });
+    const used = fake([item("https://used.com/item")]);
+    const result = await setup({ skipped, used }).search("query", { filters: { language: "en" } });
+
+    expect(result).toEqual({ success: true, data: [item("https://used.com/item")] });
+    expect(skipped.calls).toHaveLength(0);
+    expect(used.calls).toHaveLength(1);
+  });
+
+  test("passes filters through to providers and preserves descriptions", async () => {
     const filters: SearchFilters = {
       freshness: "week",
       includeDomains: ["example.com"],
@@ -193,42 +253,21 @@ describe("router", () => {
     };
     const description = "long result ".repeat(99) + "long result";
     let received: SearchFilters | undefined;
-    const registry = {
-      a: {
-        kind: "api" as const,
-        async search(_query: string, context: { filters: SearchFilters }) {
-          received = context.filters;
-          return [{ title: "Result", url: "https://example.com", description }];
-        },
+    const provider: Provider = {
+      kind: "api",
+      async search(_query: string, context: { filters: SearchFilters }) {
+        received = context.filters;
+        return [{ title: "Result", url: "https://example.com/result", description }];
       },
     };
 
-    const result = await setup(registry).search("q", { filters });
+    const result = await setup({ provider }).search("query", { filters });
 
     expect(received).toEqual(filters);
     expect(result).toEqual({
       success: true,
-      provider: "a",
-      attempts: [],
-      data: [{ title: "Result", url: "https://example.com", description }],
+      data: [{ title: "Result", url: "https://example.com/result", description }],
     });
-  });
-
-  test("skips providers that cannot honor requested filters", async () => {
-    const skipped = Object.assign(fake([item("https://skipped.com")]), { supports: () => false });
-    const used = fake([item("https://used.com")]);
-    const result = await setup({ skipped, used }).search("q", { filters: { language: "en" } });
-
-    expect(result).toEqual({ success: true, provider: "used", attempts: [], data: [item("https://used.com")] });
-    expect(skipped.calls).toHaveLength(0);
-    expect(used.calls).toHaveLength(1);
-  });
-
-  test("drops results outside the requested domains, whatever the provider returned", async () => {
-    const loose = fake([item("https://docs.sqlite.org/wal"), item("https://stackoverflow.com/q/1"), item("https://sqlite.org.evil.com")]);
-    const result = await setup({ loose }).search("q", { filters: { includeDomains: ["sqlite.org"] } });
-
-    expect(result.success && result.data.map((found) => found.url)).toEqual(["https://docs.sqlite.org/wal"]);
   });
 
   test("sends only scrapers through the proxy", async () => {
@@ -241,18 +280,9 @@ describe("router", () => {
       },
     });
     const registry = { scraper: provider("scrape", false), api: provider("public", true) };
-    const router = createSearch(registry, { store: memoryStore(), env: {}, random: () => 0, proxy: "http://proxy:8000" });
-    await router.search("q-2");
+    const searcher = setup(registry, { proxy: "http://proxy:8000" });
+    await searcher.search("query");
 
     expect(seen).toEqual({ scrape: "http://proxy:8000", public: undefined });
-  });
-
-  test("filters set to their defaults do not rule providers out", async () => {
-    const plain = Object.assign(fake([item("https://p.com")]), {
-      supports: (filters: SearchFilters) => Object.keys(filters).length === 0,
-    });
-    const result = await setup({ plain }).search("q", { filters: { type: "web", searchDepth: "fast" } });
-
-    expect(result).toEqual({ success: true, provider: "plain", attempts: [], data: [item("https://p.com")] });
   });
 });

@@ -36,6 +36,11 @@ const defaultPath = () => join(process.env.XDG_CACHE_HOME ?? join(homedir(), ".c
 
 type ProviderRow = { id: string; benched_until: number; success: number | null; latency_ms: number | null };
 
+function cleanResult(value: unknown): SuccessfulSearch | undefined {
+  const parsed = successfulSearch.safeParse(value);
+  return parsed.success ? parsed.data : undefined;
+}
+
 export function openStore(path = defaultPath()): StateStore & CacheStore {
   if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
   const db = new Database(path, { create: true });
@@ -73,6 +78,7 @@ export function openStore(path = defaultPath()): StateStore & CacheStore {
   const writeCache = db.query<void, [string, string, number]>(
     "INSERT OR REPLACE INTO cache (key, result, expires_at) VALUES (?, ?, ?)",
   );
+  const deleteCache = db.query<void, [string]>("DELETE FROM cache WHERE key = ?");
   const pruneCache = db.query<void, [number]>(
     "DELETE FROM cache WHERE key NOT IN (SELECT key FROM cache ORDER BY expires_at DESC LIMIT ?)",
   );
@@ -101,11 +107,20 @@ export function openStore(path = defaultPath()): StateStore & CacheStore {
     read(key, now) {
       const row = readCache.get(key);
       if (!row || row.expires_at <= now) return undefined;
-      const parsed = successfulSearch.safeParse(JSON.parse(row.result));
-      return parsed.success ? parsed.data : undefined;
+      try {
+        const result = cleanResult(JSON.parse(row.result));
+        if (result) return result;
+      } catch {
+        deleteCache.run(key);
+        return undefined;
+      }
+      deleteCache.run(key);
+      return undefined;
     },
     write(key, result, expiresAt) {
-      writeCache.run(key, JSON.stringify(result), expiresAt);
+      const cleaned = cleanResult(result);
+      if (!cleaned) return;
+      writeCache.run(key, JSON.stringify(cleaned), expiresAt);
       pruneCache.run(DISK_CACHE_MAX_ENTRIES);
     },
   };
@@ -136,8 +151,10 @@ export function memoryCache(maxEntries = 128): CacheStore {
       return structuredClone(entry.result);
     },
     write(key, result, expiresAt) {
+      const cleaned = cleanResult(result);
+      if (!cleaned) return;
       entries.delete(key);
-      entries.set(key, { result: structuredClone(result), expiresAt });
+      entries.set(key, { result: structuredClone(cleaned), expiresAt });
       while (entries.size > maxEntries) {
         const oldest = entries.keys().next().value;
         if (oldest === undefined) break;

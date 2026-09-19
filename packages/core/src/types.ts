@@ -14,8 +14,6 @@ export type SearchItem = z.infer<typeof searchItem>;
 
 export const successfulSearch = z.object({
   success: z.literal(true),
-  provider: z.string(),
-  attempts: z.array(z.string()),
   data: z.array(searchItem),
 });
 

@@ -2,12 +2,14 @@ import { providers as specs, type ProviderId, type ProviderSpec } from "./config
 import { HttpError, request } from "./http";
 import { callMcp } from "./mcp";
 import { parse } from "./parser";
-import { createRouter, type RouterOptions, usesProxy } from "./router";
+import { createRouter, type RouterOptions, type Task, usesProxy } from "./router";
 import { type CacheStore, memoryCache } from "./state";
-import type { Provider, SearchContext, SearchFilters, SearchItem, SearchResult } from "./types";
+import type { Provider, SearchContext, SearchFilters, SearchItem, SearchResult, SuccessfulSearch } from "./types";
 
-const BUDGET_MS = 15_000;
-const HEDGE_MS = 2_500;
+const FUSION_WINDOW_MS = 1_500;
+const HEDGE_MS = 400;
+const RRF_K = 60;
+const MAX_PER_DOMAIN = 2;
 const CACHE_DEFAULT_TTL_MS = 20 * 60_000;
 const CACHE_WEEK_TTL_MS = 60 * 60_000;
 const CACHE_LONG_TTL_MS = 24 * 60 * 60_000;
@@ -114,7 +116,12 @@ function cacheTtl(filters: SearchContext["filters"]): number {
   }
 }
 
-function cacheKey(query: string, limit: number, providerIds: readonly string[], filters: SearchContext["filters"]): string {
+function cacheKey(
+  query: string,
+  limit: number,
+  only: readonly string[] | undefined,
+  filters: SearchContext["filters"],
+): string {
   const freshness = (() => {
     switch (filters.freshness) {
       case "day":
@@ -128,10 +135,10 @@ function cacheKey(query: string, limit: number, providerIds: readonly string[], 
   })();
 
   return JSON.stringify({
-    version: 1,
+    version: 2,
     query: query.trim().replace(/\s+/g, " "),
     limit,
-    providers: providerIds,
+    only: only?.length ? [...only].sort() : undefined,
     filters: {
       freshness,
       includeDomains: filters.includeDomains?.length ? [...filters.includeDomains].sort() : undefined,
@@ -146,9 +153,80 @@ function cacheKey(query: string, limit: number, providerIds: readonly string[], 
   });
 }
 
+function hostOf(url: string): string {
+  return URL.parse(url)?.hostname ?? "";
+}
+
+const TRACKING_PARAMS = new Set([
+  "fbclid",
+  "gclid",
+  "igshid",
+  "mc_cid",
+  "mc_eid",
+  "ref",
+  "ref_src",
+  "spm",
+  "yclid",
+]);
+
+function normalizeUrl(raw: string): string | undefined {
+  const url = URL.parse(raw);
+  if (!url || (url.protocol !== "http:" && url.protocol !== "https:")) return undefined;
+  url.hash = "";
+  url.hostname = url.hostname.toLowerCase().replace(/^www\./, "");
+  if (url.pathname !== "/") url.pathname = url.pathname.replace(/\/+$/, "");
+  for (const name of Array.from(url.searchParams.keys())) {
+    const lower = name.toLowerCase();
+    if (TRACKING_PARAMS.has(lower) || lower.startsWith("utm_")) url.searchParams.delete(name);
+  }
+  url.searchParams.sort();
+  const normalized = url.toString();
+  return normalized.endsWith("/") ? normalized.slice(0, -1) : normalized;
+}
+
+function fuse(lists: SearchItem[][]): SearchItem[] {
+  const scored = new Map<string, { item: SearchItem; score: number; order: number }>();
+  let order = 0;
+  for (const list of lists) {
+    const seen = new Set<string>();
+    for (const [index, item] of list.entries()) {
+      const url = normalizeUrl(item.url);
+      if (!url || seen.has(url)) continue;
+      seen.add(url);
+      const score = 1 / (RRF_K + index + 1);
+      const existing = scored.get(url);
+      if (existing) existing.score += score;
+      else scored.set(url, { item: { ...item, url }, score, order: order++ });
+    }
+  }
+  return [...scored.values()].sort((a, b) => b.score - a.score || a.order - b.order).map((entry) => entry.item);
+}
+
+function diversify(items: SearchItem[], limit: number): SearchItem[] {
+  const counts = new Map<string, number>();
+  const chosen: SearchItem[] = [];
+  const overflow: SearchItem[] = [];
+  for (const item of items) {
+    if (chosen.length >= limit) break;
+    const host = hostOf(item.url);
+    const count = counts.get(host) ?? 0;
+    if (count < MAX_PER_DOMAIN) {
+      counts.set(host, count + 1);
+      chosen.push(item);
+    } else {
+      overflow.push(item);
+    }
+  }
+  for (const item of overflow) {
+    if (chosen.length >= limit) break;
+    chosen.push(item);
+  }
+  return chosen;
+}
+
 export function createSearch<R extends Record<string, Provider>>(registry: R, options: SearchOptions) {
   type Id = keyof R & string;
-  const router = createRouter("search", registry, options, { budgetMs: BUDGET_MS, hedgeMs: HEDGE_MS });
+  const router = createRouter("search", registry, options, { budgetMs: FUSION_WINDOW_MS, hedgeMs: HEDGE_MS });
   const cache = options.cache ?? memoryCache();
 
   async function search(
@@ -165,11 +243,11 @@ export function createSearch<R extends Record<string, Provider>>(registry: R, op
       };
     }
 
-    const key = cacheKey(query, limit, ready, filters);
+    const key = cacheKey(query, limit, only, filters);
     const cached = cache.read(key, router.now());
     if (cached) return cached;
 
-    const result = await router.route(ready, {
+    const task: Task<Id, SearchItem[]> = {
       call: async (id, apiKey, signal) =>
         (await router.get(id).search(query, {
           limit,
@@ -183,8 +261,41 @@ export function createSearch<R extends Record<string, Provider>>(registry: R, op
           .slice(0, limit),
       accept: (items) => items.length > 0,
       empty: "no results",
-    });
-    if (result.success) cache.write(key, result, router.now() + cacheTtl(filters));
+    };
+
+    const collect = async (ids: Id[]) => {
+      const outcomes = await Promise.all(ids.map((id) => router.route([id], task)));
+      const lists: SearchItem[][] = [];
+      const failures: string[] = [];
+      for (const outcome of outcomes) {
+        if (outcome.success) lists.push(outcome.data);
+        else failures.push(outcome.error.replace("All providers failed. ", ""));
+      }
+      return { lists, failures };
+    };
+
+    const free = ready.filter((id) => !router.get(id).env);
+    const keyed = ready.filter((id) => router.get(id).env);
+
+    const primary = await collect(free);
+    let lists = primary.lists;
+    let failures = primary.failures;
+    if (lists.length === 0 && keyed.length > 0) {
+      const fallback = await collect(keyed);
+      lists = fallback.lists;
+      failures = [...failures, ...fallback.failures];
+    }
+
+    const data = diversify(fuse(lists), limit);
+    if (data.length === 0) {
+      return {
+        success: false,
+        error: failures.length > 0 ? `All providers failed. ${failures.join("; ")}` : "No usable results.",
+      };
+    }
+
+    const result: SuccessfulSearch = { success: true, data };
+    cache.write(key, result, router.now() + cacheTtl(filters));
     return result;
   }
 
