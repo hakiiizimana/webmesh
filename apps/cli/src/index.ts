@@ -3,10 +3,14 @@ import { parseArgs } from "node:util";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
+  createFetch,
   createSearch,
+  fetchers,
+  isFetcherId,
   isProviderId,
   openStore,
   providers,
+  type FetchResult,
   type Freshness,
   type SearchFilters,
   type SearchResult,
@@ -15,8 +19,12 @@ import { z } from "zod";
 
 const store = openStore();
 const searcher = createSearch(providers, { store, cache: store });
+const fetcher = createFetch(fetchers, { store });
 
 const limitSchema = z.number().int().min(1).max(20);
+const pageUrl = z.url({ protocol: /^https?$/ });
+const formatSchema = z.enum(["markdown", "html"]);
+const maxCharactersSchema = z.number().int().min(1_000).max(1_000_000);
 const date = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Expected YYYY-MM-DD.");
 const filtersSchema = z.object({
   freshness: z.union([z.enum(["day", "week", "month", "year"]), z.object({ from: date, to: date.optional() })]).optional(),
@@ -97,6 +105,26 @@ async function runSearch(
   });
 }
 
+async function runFetch(
+  url: string | undefined,
+  { format, maxCharacters, only }: { format?: string; maxCharacters?: string; only?: string } = {},
+): Promise<FetchResult> {
+  const parsedUrl = pageUrl.safeParse(url);
+  if (!parsedUrl.success) return { success: false, error: "Pass an http or https URL." };
+  const parsedFormat = formatSchema.optional().safeParse(format);
+  if (!parsedFormat.success) return { success: false, error: "Format must be markdown or html." };
+  const parsedMax = maxCharacters === undefined ? undefined : maxCharactersSchema.safeParse(Number(maxCharacters));
+  if (parsedMax && !parsedMax.success) return { success: false, error: "Max characters must be a whole number from 1000 to 1000000." };
+  const requested = only?.split(",").map((id) => id.trim());
+  const unknown = requested?.filter((id) => !isFetcherId(id));
+  if (unknown?.length) return { success: false, error: `Unknown fetcher(s): ${unknown.join(", ")}.` };
+  return fetcher.fetch(parsedUrl.data, {
+    format: parsedFormat.data,
+    maxCharacters: parsedMax?.data,
+    only: requested?.filter(isFetcherId),
+  });
+}
+
 async function serveMcp() {
   const server = new McpServer({ name: "webmesh", version: "0.1.0" });
   server.registerTool(
@@ -125,6 +153,31 @@ async function serveMcp() {
       return { content: [{ type: "text", text: JSON.stringify(result) }], isError: !result.success };
     },
   );
+  server.registerTool(
+    "web_fetch",
+    {
+      title: "Fetch a page",
+      description:
+        "Fetch a web page and return its main content as markdown (default) or HTML. " +
+        "Returns JSON: { success, provider, attempts, data: { url, title, format, content, truncated, publishedAt? } }. " +
+        "Tries a local fetch first, then remote readers, and uses keyed readers only when free ones can't answer.",
+      inputSchema: {
+        url: pageUrl.describe("The http or https page to fetch."),
+        format: formatSchema.optional().describe("markdown (default) or html."),
+        maxCharacters: maxCharactersSchema.optional().describe("Cut the content at this many characters (default 50000)."),
+        providers: z.array(z.string()).optional().describe("Only use these fetcher IDs."),
+      },
+    },
+    async ({ url, format, maxCharacters, providers: requested }) => {
+      const unknown = requested?.filter((id) => !isFetcherId(id));
+      if (unknown?.length) {
+        const result: FetchResult = { success: false, error: `Unknown fetcher(s): ${unknown.join(", ")}.` };
+        return { content: [{ type: "text", text: JSON.stringify(result) }], isError: true };
+      }
+      const result = await fetcher.fetch(url, { format, maxCharacters, only: requested?.filter(isFetcherId) });
+      return { content: [{ type: "text", text: JSON.stringify(result) }], isError: !result.success };
+    },
+  );
   await server.connect(new StdioServerTransport());
 }
 
@@ -140,7 +193,11 @@ const USAGE = `webmesh search <query>     search the web (JSON)
       --safe-search <strict|moderate|off>
       --exact-match
       --search-depth <fast|deep>
-webmesh providers            list providers with cooldowns and health (JSON)
+webmesh fetch <url>        fetch a page as markdown or HTML (JSON)
+      --format <markdown|html>
+      --max-characters <n>   cut content at n characters (default 50000)
+  -p, --providers <a,b>      only use these fetchers
+webmesh providers            list search and fetch providers with cooldowns and health (JSON)
 webmesh mcp                  run the MCP server over stdio`;
 
 const { values, positionals } = parseArgs({
@@ -157,6 +214,8 @@ const { values, positionals } = parseArgs({
     "safe-search": { type: "string" },
     "exact-match": { type: "boolean" },
     "search-depth": { type: "string" },
+    format: { type: "string" },
+    "max-characters": { type: "string" },
     help: { type: "boolean", short: "h" },
   },
 });
@@ -185,8 +244,16 @@ if (command === "search" && !values.help) {
     : { success: false, error: parsedFilters.error };
   print(result);
   if (!result.success) process.exitCode = 1;
+} else if (command === "fetch" && !values.help) {
+  const result = await runFetch(rest[0], {
+    format: values.format,
+    maxCharacters: values["max-characters"],
+    only: values.providers,
+  });
+  print(result);
+  if (!result.success) process.exitCode = 1;
 } else if (command === "providers") {
-  print({ success: true, data: searcher.status() });
+  print({ success: true, data: { search: searcher.status(), fetch: fetcher.status() } });
 } else if (command === "mcp") {
   await serveMcp();
 } else {
