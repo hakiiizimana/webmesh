@@ -5,6 +5,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import {
   agentBrowserPath,
+  checkProviders,
   createBrowser,
   LOGIN_STATE,
   createFetch,
@@ -254,6 +255,7 @@ webmesh setup                add webmesh to every coding agent found on this mac
       --remove               take webmesh out again
 webmesh login <url>          log in once in a visible browser; later browser sessions start logged in
 webmesh logout               forget saved logins
+webmesh check                try every provider once; exits 1 if one looks broken (not just blocked)
 webmesh providers            list search and fetch providers with cooldowns and health (JSON)
 webmesh mcp                  run the MCP server over stdio`;
 
@@ -351,6 +353,11 @@ if (command === "search" && !values.help) {
   if (!result.success) process.exitCode = 1;
 } else if (command === "setup" && !values.help) {
   console.log((await setup(values.agent, values.remove === true)).join("\n"));
+} else if (command === "check" && !values.help) {
+  const results = await checkProviders();
+  const broken = results.filter((result) => result.status === "broken");
+  print({ success: broken.length === 0, data: results });
+  if (broken.length > 0) process.exitCode = 1;
 } else if (command === "providers") {
   print({ success: true, data: { search: searcher.status(), fetch: fetcher.status() } });
 } else if (command === "mcp") {

@@ -1,4 +1,5 @@
 export { agentBrowserPath, createBrowser, LOGIN_STATE, type BrowserResult } from "./browser";
+export { checkProviders, type CheckResult } from "./check";
 export { isProviderId, type ProviderId } from "./config";
 export {
   createFetch,
