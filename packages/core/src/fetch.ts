@@ -9,7 +9,7 @@ import { blockedUrl, type ResolveAddresses } from "./network";
 import { publishedDate } from "./parser";
 import { createRouter, type Routed, type RouterOptions, TargetError, usesProxy } from "./router";
 import type { ProviderKind } from "./types";
-import { defaultYtDlpPath, extractYtDlpMetadata, type YtDlpMetadata } from "./ytDlp";
+import { defaultYtDlpPath, extractYtDlpMetadata, type YtDlpMetadata } from "./read/providers/ytDlp";
 
 const BUDGET_MS = 30_000;
 const HEDGE_MS = 3_000;
@@ -51,11 +51,11 @@ const acceptsSocialUrl = (url: string): boolean => {
   return parsed !== null && SOCIAL_HOSTS.test(parsed.hostname);
 };
 
-async function fetchSocial(url: string, { signal, proxy }: FetchContext): Promise<FetchedPage> {
-  const result = await extractYtDlpMetadata(url, { signal, proxy });
+async function fetchSocial(url: string, { signal, proxy, allowPrivateNetworks, resolve }: FetchContext): Promise<FetchedPage> {
+  const result = await extractYtDlpMetadata(url, { signal, proxy, allowPrivateNetworks, resolve });
   if (!result.success) throw new TargetError(result.error.message);
   const media = result.data;
-  const content = media.description.trim() || media.title;
+  const content = media.transcript?.trim() || media.description.trim() || media.title;
   return {
     url: media.url,
     title: media.title,

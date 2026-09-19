@@ -2,7 +2,7 @@ import { chmod, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "bun:test";
-import { extractYtDlpMetadata, memoryYtDlpCache } from "../src/ytDlp";
+import { captionToMarkdown, extractYtDlpMetadata, memoryYtDlpCache } from "../src/read/providers/ytDlp";
 
 const makeFake = async (body: string): Promise<string> => {
   const directory = await mkdtemp(join(tmpdir(), "webmesh-ytdlp-"));
@@ -82,6 +82,41 @@ console.log(JSON.stringify({
     });
     expect(JSON.stringify(result.data)).not.toContain("temporary.test");
   } finally {
+    await removeFake(executablePath);
+  }
+});
+
+test("turns VTT and JSON3 captions into readable markdown", () => {
+  expect(captionToMarkdown("WEBVTT\n\n00:00.000 --> 00:01.000\nHello <b>world</b>\n\n00:01.000 --> 00:02.000\nHello world\n\n00:02.000 --> 00:03.000\nNext line", "vtt"))
+    .toBe("Hello world\n\nNext line");
+  expect(captionToMarkdown(JSON.stringify({ events: [{ segs: [{ utf8: "First " }, { utf8: "line" }] }, { segs: [{ utf8: "Second" }] }] }), "json3"))
+    .toBe("First line\n\nSecond");
+});
+
+test("downloads the requested caption language and keeps its URL private", async () => {
+  const captions = Bun.serve({
+    port: 0,
+    fetch: (request) => new Response(new URL(request.url).pathname === "/fr" ? "WEBVTT\n\n00:00.000 --> 00:01.000\nBonjour" : "WEBVTT\n\n00:00.000 --> 00:01.000\nHello"),
+  });
+  const executablePath = await makeFake(`console.log(JSON.stringify({
+    id: "captions",
+    title: "Captions",
+    subtitles: {
+      en: [{ ext: "vtt", url: "http://127.0.0.1:${captions.port}/en" }],
+      fr: [{ ext: "vtt", url: "http://127.0.0.1:${captions.port}/fr" }]
+    }
+  }));`);
+  try {
+    const result = await extractYtDlpMetadata("https://social.test/captions", {
+      executablePath,
+      language: "fr-FR",
+      cache: false,
+      allowPrivateNetworks: true,
+    });
+    expect(result.success && result.data.transcript).toBe("Bonjour");
+    expect(JSON.stringify(result)).not.toContain(`127.0.0.1:${captions.port}`);
+  } finally {
+    captions.stop(true);
     await removeFake(executablePath);
   }
 });

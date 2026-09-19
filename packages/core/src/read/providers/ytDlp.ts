@@ -1,12 +1,15 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { request } from "../../http";
+import { blockedUrl, type ResolveAddresses } from "../../network";
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_MAX_OUTPUT_BYTES = 8_388_608;
 const DEFAULT_CACHE_TTL_MS = 3_600_000;
+const MAX_CAPTION_BYTES = 2_097_152;
 const RETRIES = "3";
 
-const bundledYtDlpPath = join(import.meta.dir, "../bin/yt-dlp");
+const bundledYtDlpPath = join(import.meta.dir, "../../../bin/yt-dlp");
 export const defaultYtDlpPath = existsSync(bundledYtDlpPath) ? bundledYtDlpPath : Bun.which("yt-dlp") ?? bundledYtDlpPath;
 
 export type YtDlpCaptionTrack = {
@@ -40,6 +43,7 @@ export type YtDlpMetadata = {
   readonly categories: readonly string[];
   readonly chapters: readonly { readonly title: string; readonly startSeconds: number; readonly endSeconds: number | null }[];
   readonly captions: readonly YtDlpCaptionTrack[];
+  readonly transcript: string | null;
   readonly liveStatus: string | null;
   readonly availability: string | null;
   readonly ageLimit: number | null;
@@ -61,6 +65,9 @@ export type YtDlpOptions = {
   readonly cache?: YtDlpCache | false;
   readonly cacheTtlMs?: number;
   readonly now?: () => number;
+  readonly language?: string;
+  readonly allowPrivateNetworks?: boolean;
+  readonly resolve?: ResolveAddresses;
 };
 
 type JsonObject = { readonly [key: string]: unknown };
@@ -132,7 +139,99 @@ const captionsFrom = (value: unknown, automatic: boolean): YtDlpCaptionTrack[] =
   });
 };
 
-const metadataFrom = (value: unknown, sourceUrl: string): YtDlpMetadata | null => {
+type CaptionSource = { language: string; automatic: boolean; extension: string; url: string };
+
+const captionSourcesFrom = (value: unknown, automatic: boolean): CaptionSource[] => {
+  if (!isObject(value)) return [];
+  return Object.entries(value).flatMap(([language, raw]) => {
+    if (!Array.isArray(raw)) return [];
+    return raw.flatMap((format) => {
+      if (!isObject(format)) return [];
+      const url = stringAt(format, "url");
+      if (url === null || !/^https?:\/\//.test(url)) return [];
+      return [{ language, automatic, extension: stringAt(format, "ext") ?? "", url }];
+    });
+  });
+};
+
+const languageMatches = (actual: string, wanted: string): boolean => {
+  const left = actual.toLowerCase().split("-")[0];
+  const right = wanted.toLowerCase().split("-")[0];
+  return left === right;
+};
+
+const chooseCaption = (value: JsonObject, language?: string): CaptionSource | undefined => {
+  const sources = [...captionSourcesFrom(value.subtitles, false), ...captionSourcesFrom(value.automatic_captions, true)];
+  const formatRank = (extension: string): number => ["vtt", "json3", "ttml", "srv3", "srv2", "srv1"].indexOf(extension);
+  const languageRank = (source: CaptionSource): number => {
+    const requested = language !== undefined && languageMatches(source.language, language);
+    const english = languageMatches(source.language, "en");
+    if (!source.automatic && requested) return 0;
+    if (!source.automatic && english) return 1;
+    if (!source.automatic) return 2;
+    if (requested) return 3;
+    if (english) return 4;
+    return 5;
+  };
+  return sources.sort((left, right) => {
+    const byLanguage = languageRank(left) - languageRank(right);
+    if (byLanguage !== 0) return byLanguage;
+    const leftFormat = formatRank(left.extension);
+    const rightFormat = formatRank(right.extension);
+    return (leftFormat < 0 ? 99 : leftFormat) - (rightFormat < 0 ? 99 : rightFormat);
+  })[0];
+};
+
+const decodeEntities = (text: string): string => text
+  .replaceAll("&amp;", "&")
+  .replaceAll("&lt;", "<")
+  .replaceAll("&gt;", ">")
+  .replaceAll("&quot;", '"')
+  .replaceAll("&#39;", "'");
+
+const cleanTranscriptLines = (lines: string[]): string | null => {
+  const cleaned: string[] = [];
+  for (const line of lines) {
+    const text = decodeEntities(line.replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim());
+    if (text && text !== cleaned.at(-1)) cleaned.push(text);
+  }
+  return cleaned.length === 0 ? null : cleaned.join("\n\n");
+};
+
+export function captionToMarkdown(body: string, extension: string): string | null {
+  if (extension === "json3") {
+    try {
+      const parsed: unknown = JSON.parse(body);
+      if (!isObject(parsed) || !Array.isArray(parsed.events)) return null;
+      return cleanTranscriptLines(parsed.events.flatMap((event) => {
+        if (!isObject(event) || !Array.isArray(event.segs)) return [];
+        return [event.segs.flatMap((segment) => isObject(segment) && typeof segment.utf8 === "string" ? [segment.utf8] : []).join("")];
+      }));
+    } catch {
+      return null;
+    }
+  }
+  const lines = body.split(/\r?\n/).filter((line) =>
+    !/^WEBVTT|^Kind:|^Language:|^NOTE|^\d+$|^\s*$|-->/.test(line.trim()),
+  );
+  return cleanTranscriptLines(lines);
+}
+
+async function transcriptFrom(value: JsonObject, options: YtDlpOptions): Promise<string | null> {
+  const selected = chooseCaption(value, options.language);
+  if (selected === undefined) return null;
+  try {
+    if (!options.allowPrivateNetworks && await blockedUrl(selected.url, options.resolve)) return null;
+    const response = await request(selected.url, { signal: options.signal ?? AbortSignal.timeout(DEFAULT_TIMEOUT_MS), proxy: options.proxy });
+    const body = await response.text();
+    if (new TextEncoder().encode(body).byteLength > MAX_CAPTION_BYTES) return null;
+    return captionToMarkdown(body, selected.extension);
+  } catch {
+    return null;
+  }
+}
+
+const metadataFrom = (value: unknown, sourceUrl: string, transcript: string | null): YtDlpMetadata | null => {
   if (!isObject(value)) return null;
   const id = stringAt(value, "id");
   const title = stringAt(value, "title", "fulltitle");
@@ -162,6 +261,7 @@ const metadataFrom = (value: unknown, sourceUrl: string): YtDlpMetadata | null =
     categories: stringsAt(value, "categories"),
     chapters: chaptersFrom(value),
     captions: [...captionsFrom(value.subtitles, false), ...captionsFrom(value.automatic_captions, true)],
+    transcript,
     liveStatus: stringAt(value, "live_status"),
     availability: stringAt(value, "availability"),
     ageLimit: numberAt(value, "age_limit"),
@@ -263,7 +363,8 @@ async function runYtDlp(sourceUrl: string, options: YtDlpOptions): Promise<YtDlp
   if (exitCode !== 0) return failure("exit", outputText(stderr).trim().split("\n")[0] || `yt-dlp exited with code ${exitCode}`, exitCode);
   let parsed: unknown;
   try { parsed = JSON.parse(outputText(stdout)); } catch { return failure("invalid-json", "yt-dlp returned invalid JSON"); }
-  const metadata = metadataFrom(parsed, sourceUrl);
+  const transcript = isObject(parsed) ? await transcriptFrom(parsed, options) : null;
+  const metadata = metadataFrom(parsed, sourceUrl, transcript);
   return metadata === null ? failure("invalid-json", "yt-dlp returned incomplete metadata") : { success: true, data: metadata };
 }
 
@@ -277,7 +378,7 @@ export async function extractYtDlpMetadata(sourceUrl: string, options: YtDlpOpti
   if (options.signal?.aborted) return failure("cancelled", "yt-dlp was cancelled");
   const now = options.now?.() ?? Date.now();
   const cache = options.cache === false ? undefined : options.cache ?? defaultCache;
-  const key = JSON.stringify([options.executablePath ?? defaultYtDlpPath, sourceUrl]);
+  const key = JSON.stringify([options.executablePath ?? defaultYtDlpPath, sourceUrl, options.language ?? ""]);
   const cached = cache?.get(key, now);
   if (cached) return { success: true, data: cached };
   const existing = pending.get(key);
