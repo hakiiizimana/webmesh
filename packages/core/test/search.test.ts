@@ -79,6 +79,17 @@ describe("router", () => {
     expect(slow.cancelled).toHaveLength(1);
   });
 
+  test("status reports health once a provider has been tried", async () => {
+    const registry = { tried: fake([item("https://t.com")]), untried: fake([]) };
+    const router = setup(registry);
+    await router.search("q");
+
+    const [tried, untried] = router.status();
+    expect(tried).toMatchObject({ id: "tried", successRate: 1 });
+    expect(tried?.latencyMs).toBeNumber();
+    expect(untried).toMatchObject({ id: "untried", successRate: null, latencyMs: null });
+  });
+
   test("gives up when the time budget runs out", async () => {
     const result = await setup({ slow: hung() }, { budgetMs: 20 }).search("q");
     expect(result).toEqual({ success: false, error: "All providers failed. slow: timed out" });

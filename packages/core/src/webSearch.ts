@@ -368,15 +368,21 @@ export function createSearch<R extends Record<string, Provider>>(registry: R, op
     }
   }
 
+  /** Readiness, cooldown, and health per provider. `successRate` and `latencyMs` are null until it has been tried. */
   function status() {
     const state = store.load();
-    return ids.map((id) => ({
-      id,
-      kind: get(id).kind,
-      ready: isReady(id),
-      needs: isReady(id) ? undefined : get(id).env,
-      coolingDownSeconds: Math.max(0, Math.ceil(((state.benched[id] ?? 0) - now()) / 1000)),
-    }));
+    return ids.map((id) => {
+      const health = state.health[id];
+      return {
+        id,
+        kind: get(id).kind,
+        ready: isReady(id),
+        needs: isReady(id) ? undefined : get(id).env,
+        coolingDownSeconds: Math.max(0, Math.ceil(((state.benched[id] ?? 0) - now()) / 1000)),
+        successRate: health ? Math.round(health.success * 100) / 100 : null,
+        latencyMs: health ? Math.round(health.latencyMs) : null,
+      };
+    });
   }
 
   return { search, status };

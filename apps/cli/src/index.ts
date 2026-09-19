@@ -140,7 +140,7 @@ const USAGE = `webmesh search <query>     search the web (JSON)
       --safe-search <strict|moderate|off>
       --exact-match
       --search-depth <fast|deep>
-webmesh providers            list providers (JSON)
+webmesh providers            list providers with cooldowns and health (JSON)
 webmesh mcp                  run the MCP server over stdio`;
 
 const { values, positionals } = parseArgs({
