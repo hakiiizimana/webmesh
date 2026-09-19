@@ -19,6 +19,7 @@ import {
   type SearchResult,
 } from "@webmesh/core";
 import { z } from "zod";
+import { version } from "../package.json";
 
 const store = openStore();
 const searcher = createSearch(providers, { store, cache: store });
@@ -132,7 +133,7 @@ async function runFetch(
 }
 
 async function serveMcp() {
-  const server = new McpServer({ name: "webmesh", version: "0.1.0" });
+  const server = new McpServer({ name: "webmesh", version });
   server.registerTool(
     "web_search",
     {

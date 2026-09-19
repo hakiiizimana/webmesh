@@ -4,6 +4,9 @@ node_modules
 # output
 out
 dist
+# copied into the CLI package by its build script
+apps/cli/README.md
+apps/cli/LICENSE
 *.tgz
 
 # code coverage
