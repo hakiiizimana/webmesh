@@ -36,7 +36,7 @@ const defaultPath = () => join(process.env.XDG_CACHE_HOME ?? join(homedir(), ".c
 
 type ProviderRow = { id: string; benched_until: number; success: number | null; latency_ms: number | null };
 
-function cleanResult(value: unknown): SuccessfulSearch | undefined {
+function cleanResult<T>(value: T): SuccessfulSearch | undefined {
   const parsed = successfulSearch.safeParse(value);
   return parsed.success ? parsed.data : undefined;
 }

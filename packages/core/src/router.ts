@@ -1,7 +1,7 @@
 import { SoftBlockError } from "./html";
 import { HttpError, NetworkError } from "./http";
 import { NEW_PROVIDER, type ProviderHealth, type RoutingState, type StateStore } from "./state";
-import type { ProviderKind } from "./types";
+import type { ProviderKind } from "./shared/provider-kind";
 
 const BLOCKED_MS = 10 * 60_000;
 const TRANSIENT_MS = 30_000;

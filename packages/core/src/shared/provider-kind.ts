@@ -1,0 +1,1 @@
+export type ProviderKind = "api" | "mcp" | "public" | "scrape" | "local" | "browser";
