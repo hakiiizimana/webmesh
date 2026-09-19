@@ -8,8 +8,6 @@ import type { SuccessfulSearch } from "../src/types";
 
 const result: SuccessfulSearch = {
   success: true as const,
-  provider: "brave",
-  attempts: [],
   data: [{ title: "t", url: "https://t.com", description: "" }],
 };
 
@@ -27,7 +25,7 @@ test("sessions sharing one store file see each other's cooldowns, health, and ca
   const state = second.load();
   expect(state.benched.ddg).toBe(5_000);
   expect(state.health.brave?.success).toBeCloseTo(0.49);
-  expect(second.read("q", 99)?.provider).toBe("brave");
+  expect(second.read("q", 99)).toEqual(result);
   expect(second.read("q", 100)).toBeUndefined();
 });
 
