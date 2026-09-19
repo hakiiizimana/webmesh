@@ -1,48 +1,164 @@
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { Database } from "bun:sqlite";
+import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { z } from "zod";
+import { successfulSearch, type SuccessfulSearch } from "./types";
 
 /** Moving averages per provider: share of searches that returned results, and time to answer. */
-const health = z.object({ success: z.number(), latencyMs: z.number() });
+export type ProviderHealth = { success: number; latencyMs: number };
+export type RoutingState = { benched: Record<string, number>; health: Record<string, ProviderHealth> };
 
-const routingState = z.object({
-  benched: z.record(z.string(), z.number()).default({}),
-  health: z.record(z.string(), health).default({}),
-});
-
-export type ProviderHealth = z.infer<typeof health>;
-export type RoutingState = z.infer<typeof routingState>;
-
+/**
+ * Cooldowns and health shared by every search. Updates land one provider at a time,
+ * so concurrent searches and agent sessions don't overwrite each other.
+ */
 export type StateStore = {
+  /** Snapshot read once per search to rank providers and skip cooling ones. */
   load: () => RoutingState;
-  save: (state: RoutingState) => void;
+  /** Folds one observation into a provider's moving averages. */
+  observe: (id: string, sample: Partial<ProviderHealth>) => void;
+  /** Keeps a provider out of searches until `until` (epoch ms). A longer existing cooldown wins. */
+  bench: (id: string, until: number) => void;
 };
 
-const defaultPath = () => join(process.env.XDG_CACHE_HOME ?? join(homedir(), ".cache"), "webmesh", "state.json");
+export type CacheStore = {
+  read: (key: string, now: number) => SuccessfulSearch | undefined;
+  write: (key: string, result: SuccessfulSearch, expiresAt: number) => void;
+};
 
-export function fileStore(path = defaultPath()): StateStore {
+/** Weight of the newest sample in each provider's moving averages. */
+const HEALTH_ALPHA = 0.3;
+/** Providers with no history start healthy so they get a fair first try. */
+export const NEW_PROVIDER: ProviderHealth = { success: 1, latencyMs: 1_500 };
+const DISK_CACHE_MAX_ENTRIES = 1_000;
+
+const blend = (average: number, sample: number) => average + HEALTH_ALPHA * (sample - average);
+
+function nextHealth(current: ProviderHealth | undefined, sample: Partial<ProviderHealth>): ProviderHealth {
+  const base = current ?? NEW_PROVIDER;
+  return {
+    success: sample.success === undefined ? base.success : blend(base.success, sample.success),
+    latencyMs: sample.latencyMs === undefined ? base.latencyMs : blend(base.latencyMs, sample.latencyMs),
+  };
+}
+
+const defaultPath = () => join(process.env.XDG_CACHE_HOME ?? join(homedir(), ".cache"), "webmesh", "webmesh.db");
+
+type ProviderRow = { id: string; benched_until: number; success: number | null; latency_ms: number | null };
+
+/**
+ * Cooldowns, health, and cached results in one SQLite file, shared by every webmesh
+ * process on the machine. Pass it as both `store` and `cache` to `createSearch`.
+ */
+export function openStore(path = defaultPath()): StateStore & CacheStore {
+  if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
+  const db = new Database(path, { create: true });
+  db.exec(`
+    PRAGMA busy_timeout = 5000;
+    PRAGMA journal_mode = WAL;
+    CREATE TABLE IF NOT EXISTS providers (
+      id TEXT PRIMARY KEY,
+      benched_until INTEGER NOT NULL DEFAULT 0,
+      success REAL,
+      latency_ms REAL
+    );
+    CREATE TABLE IF NOT EXISTS cache (
+      key TEXT PRIMARY KEY,
+      result TEXT NOT NULL,
+      expires_at INTEGER NOT NULL
+    );
+  `);
+
+  const allProviders = db.query<ProviderRow, []>("SELECT id, benched_until, success, latency_ms FROM providers");
+  const oneProvider = db.query<ProviderRow, [string]>(
+    "SELECT id, benched_until, success, latency_ms FROM providers WHERE id = ?",
+  );
+  const saveHealth = db.query<void, [string, number, number]>(
+    `INSERT INTO providers (id, success, latency_ms) VALUES (?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET success = excluded.success, latency_ms = excluded.latency_ms`,
+  );
+  const saveBench = db.query<void, [string, number]>(
+    `INSERT INTO providers (id, benched_until) VALUES (?, ?)
+     ON CONFLICT(id) DO UPDATE SET benched_until = max(benched_until, excluded.benched_until)`,
+  );
+  const readCache = db.query<{ result: string; expires_at: number }, [string]>(
+    "SELECT result, expires_at FROM cache WHERE key = ?",
+  );
+  const writeCache = db.query<void, [string, string, number]>(
+    "INSERT OR REPLACE INTO cache (key, result, expires_at) VALUES (?, ?, ?)",
+  );
+  const pruneCache = db.query<void, [number]>(
+    "DELETE FROM cache WHERE key NOT IN (SELECT key FROM cache ORDER BY expires_at DESC LIMIT ?)",
+  );
+
+  const health = (row: ProviderRow | null): ProviderHealth | undefined =>
+    row?.success != null && row.latency_ms != null ? { success: row.success, latencyMs: row.latency_ms } : undefined;
+
+  // Read-blend-write under a write lock, so two sessions observing the same provider both count.
+  const observe = db.transaction((id: string, sample: Partial<ProviderHealth>) => {
+    const next = nextHealth(health(oneProvider.get(id)), sample);
+    saveHealth.run(id, next.success, next.latencyMs);
+  });
+
   return {
     load() {
-      try {
-        return routingState.parse(JSON.parse(readFileSync(path, "utf8")));
-      } catch {
-        return { benched: {}, health: {} };
+      const state: RoutingState = { benched: {}, health: {} };
+      for (const row of allProviders.all()) {
+        state.benched[row.id] = row.benched_until;
+        const known = health(row);
+        if (known) state.health[row.id] = known;
       }
+      return state;
     },
-    save(state) {
-      mkdirSync(dirname(path), { recursive: true });
-      writeFileSync(path, JSON.stringify(state));
+    observe: (id, sample) => observe.immediate(id, sample),
+    bench: (id, until) => saveBench.run(id, until),
+    read(key, now) {
+      const row = readCache.get(key);
+      if (!row || row.expires_at <= now) return undefined;
+      const parsed = successfulSearch.safeParse(JSON.parse(row.result));
+      return parsed.success ? parsed.data : undefined;
+    },
+    write(key, result, expiresAt) {
+      writeCache.run(key, JSON.stringify(result), expiresAt);
+      pruneCache.run(DISK_CACHE_MAX_ENTRIES);
     },
   };
 }
 
+/** In-process state for tests and library callers that don't want a file. */
 export function memoryStore(): StateStore {
-  let state: RoutingState = { benched: {}, health: {} };
+  const state: RoutingState = { benched: {}, health: {} };
   return {
     load: () => structuredClone(state),
-    save: (next) => {
-      state = structuredClone(next);
+    observe: (id, sample) => {
+      state.health[id] = nextHealth(state.health[id], sample);
+    },
+    bench: (id, until) => {
+      state.benched[id] = Math.max(state.benched[id] ?? 0, until);
+    },
+  };
+}
+
+/** In-process LRU cache; the default when `createSearch` gets no `cache`. */
+export function memoryCache(maxEntries = 128): CacheStore {
+  const entries = new Map<string, { result: SuccessfulSearch; expiresAt: number }>();
+  return {
+    read(key, now) {
+      const entry = entries.get(key);
+      if (!entry) return undefined;
+      entries.delete(key);
+      if (entry.expiresAt <= now) return undefined;
+      entries.set(key, entry);
+      return structuredClone(entry.result);
+    },
+    write(key, result, expiresAt) {
+      entries.delete(key);
+      entries.set(key, { result: structuredClone(result), expiresAt });
+      while (entries.size > maxEntries) {
+        const oldest = entries.keys().next().value;
+        if (oldest === undefined) break;
+        entries.delete(oldest);
+      }
     },
   };
 }

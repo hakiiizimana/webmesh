@@ -1,16 +1,27 @@
-export type SearchItem = {
-  title: string;
-  url: string;
-  description: string;
+import { z } from "zod";
+
+export const searchItem = z.object({
+  title: z.string(),
+  url: z.string(),
+  description: z.string(),
   /** Publish date as YYYY-MM-DD, when the provider reports an absolute one. */
-  publishedAt?: string;
-  durationSeconds?: number | null;
-  channelUrl?: string | null;
-  viewCount?: number | null;
-};
+  publishedAt: z.string().optional(),
+  durationSeconds: z.number().nullish(),
+  channelUrl: z.string().nullish(),
+  viewCount: z.number().nullish(),
+});
+
+export type SearchItem = z.infer<typeof searchItem>;
 
 /** `provider` answered; `attempts` says what happened to each provider tried or skipped before it. */
-export type SuccessfulSearch = { success: true; provider: string; attempts: string[]; data: SearchItem[] };
+export const successfulSearch = z.object({
+  success: z.literal(true),
+  provider: z.string(),
+  attempts: z.array(z.string()),
+  data: z.array(searchItem),
+});
+
+export type SuccessfulSearch = z.infer<typeof successfulSearch>;
 
 export type SearchResult = SuccessfulSearch | { success: false; error: string };
 

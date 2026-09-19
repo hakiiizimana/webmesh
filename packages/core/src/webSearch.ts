@@ -3,7 +3,7 @@ import { providers as specs, type ProviderId, type ProviderSpec } from "./config
 import { SoftBlockError } from "./html";
 import { HttpError, type Json, NetworkError, request } from "./http";
 import { parse } from "./parser";
-import type { ProviderHealth, RoutingState, StateStore } from "./state";
+import { type CacheStore, memoryCache, NEW_PROVIDER, type ProviderHealth, type RoutingState, type StateStore } from "./state";
 import type { Provider, SearchContext, SearchFilters, SearchItem, SearchResult, SuccessfulSearch } from "./types";
 
 const BLOCKED_MS = 10 * 60_000;
@@ -11,14 +11,9 @@ const TRANSIENT_MS = 30_000;
 const BUDGET_MS = 15_000;
 const HEDGE_MS = 2_500;
 const RETRY_DELAY_MS = 400;
-/** Weight of the newest sample in each provider's moving averages. */
-const HEALTH_ALPHA = 0.3;
-/** Providers with no history start healthy so they get a fair first try. */
-const NEW_PROVIDER: ProviderHealth = { success: 1, latencyMs: 1_500 };
 const CACHE_DEFAULT_TTL_MS = 20 * 60_000;
 const CACHE_WEEK_TTL_MS = 60 * 60_000;
 const CACHE_LONG_TTL_MS = 24 * 60 * 60_000;
-const CACHE_MAX_ENTRIES = 128;
 
 const toolResponse = z.object({
   result: z
@@ -118,6 +113,8 @@ export const providers = {
 
 type SearchOptions = {
   store: StateStore;
+  /** Where results are cached. Defaults to an in-process cache. */
+  cache?: CacheStore;
   env?: Record<string, string | undefined>;
   /** Total time one search may take across every provider it tries. */
   budgetMs?: number;
@@ -163,17 +160,6 @@ async function withRetry<T>(call: () => Promise<T>, delayMs: number, signal: Abo
   }
 }
 
-const blend = (average: number, sample: number) => average + HEALTH_ALPHA * (sample - average);
-
-/** Folds one observation into a provider's moving averages. */
-function observe(health: RoutingState["health"], id: string, sample: Partial<ProviderHealth>): void {
-  const current = health[id] ?? NEW_PROVIDER;
-  health[id] = {
-    success: sample.success === undefined ? current.success : blend(current.success, sample.success),
-    latencyMs: sample.latencyMs === undefined ? current.latencyMs : blend(current.latencyMs, sample.latencyMs),
-  };
-}
-
 /** Reliability counts more than speed; the floor lets a struggling provider still earn its way back. */
 function weight({ success, latencyMs }: ProviderHealth): number {
   return Math.max(success, 0.2) ** 2 * (1_000 / Math.max(latencyMs, 250));
@@ -196,7 +182,6 @@ function tidy(item: SearchItem): SearchItem {
   };
 }
 
-type CacheEntry = { result: SuccessfulSearch; expiresAt: number };
 
 function cacheTtl(filters: SearchContext["filters"]): number {
   const freshness = filters.freshness;
@@ -245,10 +230,6 @@ function cacheKey(query: string, limit: number, providerIds: readonly string[], 
   });
 }
 
-function copyResult(result: SuccessfulSearch): SuccessfulSearch {
-  return structuredClone(result);
-}
-
 /**
  * Builds the router over a provider registry. Each search tries free providers before keyed ones,
  * favoring those that answer often and fast, starts the next provider alongside a slow one, and
@@ -269,29 +250,8 @@ export function createSearch<R extends Record<string, Provider>>(registry: R, op
     if (!provider) throw new Error(`unknown provider ${String(id)}`);
     return provider;
   };
-  const cache = new Map<string, CacheEntry>();
-
-  const readCache = (key: string): SuccessfulSearch | undefined => {
-    const entry = cache.get(key);
-    if (!entry) return undefined;
-    if (entry.expiresAt <= now()) {
-      cache.delete(key);
-      return undefined;
-    }
-    cache.delete(key);
-    cache.set(key, entry);
-    return copyResult(entry.result);
-  };
-
-  const writeCache = (key: string, result: SuccessfulSearch, filters: SearchContext["filters"]): void => {
-    cache.delete(key);
-    cache.set(key, { result: copyResult(result), expiresAt: now() + cacheTtl(filters) });
-    while (cache.size > CACHE_MAX_ENTRIES) {
-      const oldest = cache.keys().next().value;
-      if (oldest === undefined) break;
-      cache.delete(oldest);
-    }
-  };
+  const cache = options.cache ?? memoryCache();
+  const { store } = options;
 
   const keyFor = (id: Id) => {
     const name = get(id).env;
@@ -311,12 +271,7 @@ export function createSearch<R extends Record<string, Provider>>(registry: R, op
       .map(({ id }) => id);
 
   /** One provider's turn. Records its health and cooldown unless the search was already settled. */
-  async function attempt(
-    id: Id,
-    query: string,
-    context: SearchContext,
-    state: RoutingState,
-  ): Promise<Outcome> {
+  async function attempt(id: Id, query: string, context: SearchContext): Promise<Outcome> {
     const startedAt = performance.now();
     try {
       const found = await withRetry(
@@ -327,16 +282,16 @@ export function createSearch<R extends Record<string, Provider>>(registry: R, op
       if (context.signal.aborted) return { id, failure: "cancelled" };
       const items = found.filter((item) => item.url).map(tidy).slice(0, context.limit);
       if (items.length === 0) {
-        observe(state.health, id, { success: 0 });
+        store.observe(id, { success: 0 });
         return { id, failure: "no results" };
       }
-      observe(state.health, id, { success: 1, latencyMs: performance.now() - startedAt });
+      store.observe(id, { success: 1, latencyMs: performance.now() - startedAt });
       return { id, items };
     } catch (err) {
       if (context.signal.aborted) return { id, failure: "cancelled" };
-      observe(state.health, id, { success: 0 });
+      store.observe(id, { success: 0 });
       const ms = err instanceof HttpError ? httpCooldown(err) : err instanceof SoftBlockError ? BLOCKED_MS : TRANSIENT_MS;
-      if (ms > 0) state.benched[id] = now() + ms;
+      if (ms > 0) store.bench(id, now() + ms);
       return { id, failure: (err instanceof Error ? err.message : String(err)).split("\n")[0]?.slice(0, 120) ?? "" };
     }
   }
@@ -356,10 +311,10 @@ export function createSearch<R extends Record<string, Provider>>(registry: R, op
     }
 
     const key = cacheKey(query, limit, ready, filters);
-    const cached = readCache(key);
+    const cached = cache.read(key, now());
     if (cached) return cached;
 
-    const state = options.store.load();
+    const state = store.load();
     const cooling = ready.filter((id) => (state.benched[id] ?? 0) > now());
     const failures = cooling.map((id) => `${id}: cooling down`);
     const queue = rank(ready.filter((id) => !cooling.includes(id)), state.health);
@@ -374,7 +329,7 @@ export function createSearch<R extends Record<string, Provider>>(registry: R, op
       const id = queue.shift();
       if (id === undefined || stop.signal.aborted) return;
       const context = { limit, signal: stop.signal, key: keyFor(id), filters };
-      running.set(id, { startedAt: performance.now(), outcome: attempt(id, query, context, state) });
+      running.set(id, { startedAt: performance.now(), outcome: attempt(id, query, context) });
     };
 
     try {
@@ -398,7 +353,7 @@ export function createSearch<R extends Record<string, Provider>>(registry: R, op
         running.delete(next.id);
         if ("items" in next) {
           const result: SuccessfulSearch = { success: true, provider: next.id, attempts: failures, data: next.items };
-          writeCache(key, result, filters);
+          cache.write(key, result, now() + cacheTtl(filters));
           return result;
         }
         failures.push(`${next.id}: ${next.failure}`);
@@ -408,14 +363,13 @@ export function createSearch<R extends Record<string, Provider>>(registry: R, op
     } finally {
       clearTimeout(budget);
       // Providers still running lost the race; their elapsed time still counts against their speed.
-      for (const [id, run] of running) observe(state.health, id, { latencyMs: performance.now() - run.startedAt });
+      for (const [id, run] of running) store.observe(id, { latencyMs: performance.now() - run.startedAt });
       stop.abort();
-      options.store.save(state);
     }
   }
 
   function status() {
-    const state = options.store.load();
+    const state = store.load();
     return ids.map((id) => ({
       id,
       kind: get(id).kind,

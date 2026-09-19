@@ -4,8 +4,8 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
   createSearch,
-  fileStore,
   isProviderId,
+  openStore,
   providers,
   type Freshness,
   type SearchFilters,
@@ -13,7 +13,8 @@ import {
 } from "@webmesh/core";
 import { z } from "zod";
 
-const searcher = createSearch(providers, { store: fileStore() });
+const store = openStore();
+const searcher = createSearch(providers, { store, cache: store });
 
 const limitSchema = z.number().int().min(1).max(20);
 const date = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Expected YYYY-MM-DD.");
