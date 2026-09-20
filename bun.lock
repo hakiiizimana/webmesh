@@ -13,7 +13,7 @@
       },
     },
     "apps/cli": {
-      "name": "@hakiiizimana/webmesh",
+      "name": "@hakiizimana/webmesh",
       "version": "0.0.1",
       "bin": {
         "webmesh": "dist/webmesh.js",
@@ -54,7 +54,7 @@
     "zod": "^4.6.5",
   },
   "packages": {
-    "@hakiiizimana/webmesh": ["@hakiiizimana/webmesh@workspace:apps/cli"],
+    "@hakiizimana/webmesh": ["@hakiizimana/webmesh@workspace:apps/cli"],
 
     "@hono/node-server": ["@hono/node-server@2.1.1", "", { "peerDependencies": { "hono": "^4" } }, "sha512-ELuehkj5VCBdgEw9zs+ivkKwyzzUCSQuE96YmiPvn1ECBoZCczbFXJLeEGMTYjphP6gydh4pHMqEYPVMYUVgQg=="],
 

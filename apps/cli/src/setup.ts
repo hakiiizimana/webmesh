@@ -121,7 +121,7 @@ export async function setup(only: string | undefined, remove: boolean): Promise<
     lines.push(`${"agent skill".padEnd(12)} ${applySkill(process.cwd(), remove)}`);
   }
   if (!remove && Bun.which("webmesh") === null) {
-    lines.push("", "webmesh isn't on your PATH, so agents can't start it. Install it with: npm install -g @hakiiizimana/webmesh");
+    lines.push("", "webmesh isn't on your PATH, so agents can't start it. Install it with: npm install -g @hakiizimana/webmesh");
   }
   if (!remove && !(fetchers["yt-dlp"].available?.() ?? false)) {
     lines.push(

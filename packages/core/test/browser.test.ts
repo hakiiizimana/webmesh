@@ -78,7 +78,7 @@ test("adds a next step to stale-ref and missing-Chrome errors", () => {
   const noChrome = parseOutput(JSON.stringify({ success: false, error: 'Failed to launch Chrome at "/x": No such file' }), "", 1);
 
   expect(stale).toEqual({ success: false, error: "Unknown ref: e99. Refs change when the page changes; run snapshot -i again." });
-  expect(!noChrome.success && noChrome.error).toContain("reinstall @hakiiizimana/webmesh");
+  expect(!noChrome.success && noChrome.error).toContain("reinstall @hakiizimana/webmesh");
 });
 
 test("cuts oversized fields and keeps plain-text output", () => {
