@@ -1,7 +1,59 @@
 import { expect, test } from "bun:test";
-import { createBrowser, parseOutput, redact } from "../src/browser";
+import {
+  browserUsage,
+  createBrowser,
+  parseOutput,
+  prepareBrowserCommand,
+  redact,
+  WEBMESH_BROWSER_COMMANDS,
+} from "../src/browser";
 
 const lifecycle = { launched: false, reused: true, restoreStatus: "not_configured" };
+
+test("allows Webmesh browser commands and rejects engine administration", () => {
+  expect(prepareBrowserCommand(["open", "https://example.com"])).toEqual({ args: ["open", "https://example.com"] });
+  expect(prepareBrowserCommand(["dashboard"])).toHaveProperty("error", expect.stringContaining("Unknown Webmesh browser command"));
+});
+
+test("expands shortcuts and drops the flags webmesh sets itself", () => {
+  expect(prepareBrowserCommand(["tabs"])).toEqual({ args: ["tab", "list"] });
+  expect(prepareBrowserCommand(["inspect", "-c"])).toEqual({ args: ["snapshot", "-i", "-c"] });
+  expect(prepareBrowserCommand(["snapshot", "--json", "-i"])).toEqual({ args: ["snapshot", "-i"] });
+  expect(prepareBrowserCommand(["snapshot", "--session", "other"])).toHaveProperty("error", expect.stringContaining("--session"));
+});
+
+test("refuses flags that would leave the session, proxy, or login store behind", () => {
+  const cases = [
+    ["open", "https://example.com", "--cdp", "9222"],
+    ["open", "https://example.com", "--provider", "browserbase"],
+    ["open", "https://example.com", "--profile", "Default"],
+    ["open", "https://example.com", "--state", "/tmp/auth.json"],
+    ["open", "https://example.com", "--executable-path", "/bin/sh"],
+    ["open", "https://example.com", "--allow-file-access"],
+    ["open", "https://example.com", "--proxy", "http://127.0.0.1:8080"],
+    ["open", "https://example.com", "--ignore-https-errors"],
+  ];
+  for (const args of cases) {
+    expect(prepareBrowserCommand(args)).toHaveProperty("error", expect.stringContaining("is not available through webmesh"));
+  }
+  expect(prepareBrowserCommand(["open", "https://example.com", "--headed"])).toEqual({
+    args: ["open", "https://example.com", "--headed"],
+  });
+});
+
+test("documents only the commands it accepts", () => {
+  const usage = browserUsage();
+  const documented = [...usage.matchAll(/webmesh browser ([a-z][\w-]*)/g)].flatMap((match) => match[1] ?? []);
+
+  expect(documented.length).toBeGreaterThan(0);
+  for (const command of documented) expect(WEBMESH_BROWSER_COMMANDS).toContain(command);
+});
+
+test("does not expose browser installers", () => {
+  expect(prepareBrowserCommand(["setup"])).toHaveProperty("error", expect.stringContaining("Unknown Webmesh browser command"));
+  expect(prepareBrowserCommand(["install"])).toHaveProperty("error", expect.stringContaining("Unknown Webmesh browser command"));
+  expect(prepareBrowserCommand(["upgrade"])).toHaveProperty("error", expect.stringContaining("Unknown Webmesh browser command"));
+});
 
 test("keeps what the agent needs from a snapshot and drops the noise", () => {
   const stdout = JSON.stringify({
@@ -26,7 +78,7 @@ test("adds a next step to stale-ref and missing-Chrome errors", () => {
   const noChrome = parseOutput(JSON.stringify({ success: false, error: 'Failed to launch Chrome at "/x": No such file' }), "", 1);
 
   expect(stale).toEqual({ success: false, error: "Unknown ref: e99. Refs change when the page changes; run snapshot -i again." });
-  expect(!noChrome.success && noChrome.error).toContain("webmesh browser install");
+  expect(!noChrome.success && noChrome.error).toContain("reinstall @webmesh/cli");
 });
 
 test("cuts oversized fields and keeps plain-text output", () => {

@@ -1,8 +1,6 @@
 import { z } from "zod";
 import type { Json } from "../http";
 
-// ── search domain types ──────────────────────────────────────────
-
 export const searchItem = z.object({
   title: z.string(),
   url: z.string(),
@@ -53,8 +51,6 @@ export type Provider = {
   supports?: (filters: SearchFilters) => boolean;
   search: (query: string, ctx: SearchContext) => Promise<SearchItem[]>;
 };
-
-// ── ProviderSpec types ───────────────────────────────────────────
 
 export type FilterSupport = (filters: SearchFilters) => boolean;
 

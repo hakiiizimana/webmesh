@@ -49,6 +49,8 @@ export type FetchContext = {
 export type Fetcher = {
   kind: ProviderKind;
   env?: string;
+  // Excluded from the default provider pool. Only runs when a caller names it.
+  manual?: boolean;
   available?: () => boolean;
   accepts?: (url: string) => boolean;
   formats: readonly FetchFormat[];

@@ -14,7 +14,8 @@
     }
   },
   "scripts": {
-    "build": "turbo run build",
+    "build": "bun run build:binaries && turbo run build",
+    "build:binaries": "tools/html-to-markdown/build.sh",
     "check-types": "turbo run check-types",
     "test": "turbo run test",
     "search": "bun apps/cli/src/index.ts search",
@@ -29,5 +30,5 @@
     "turbo": "^2.10.7",
     "typescript": "catalog:"
   },
-  "packageManager": "bun@1.4.2"
+  "packageManager": "bun@1.4.1"
 }

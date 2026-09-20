@@ -59,6 +59,7 @@ export const providers = {
   "duckduckgo-html": bind(specs["duckduckgo-html"]),
   "brave-web": bind(specs["brave-web"]),
   mwmbl: bind(specs.mwmbl),
+  "marginalia-public": bind(specs["marginalia-public"]),
   "duckduckgo-lite": bind(specs["duckduckgo-lite"]),
   "firecrawl-free": bind(specs["firecrawl-free"]),
   exa: bind(specs.exa),
@@ -68,6 +69,8 @@ export const providers = {
   brave: bind(specs.brave),
   youtube: bind(specs.youtube),
   firecrawl: bind(specs.firecrawl),
+  marginalia: bind(specs.marginalia),
+  tinyfish: bind(specs.tinyfish),
 } satisfies { [K in ProviderId]: Provider };
 
 type SearchOptions = RouterOptions & {

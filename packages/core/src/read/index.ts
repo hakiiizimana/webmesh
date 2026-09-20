@@ -6,8 +6,11 @@ import { fetchDirect } from "./providers/direct";
 import { fetchExaMcp } from "./providers/exa";
 import { fetchFirecrawl } from "./providers/firecrawl";
 import { fetchJina } from "./providers/jina";
+import { fetchMarkdownNew } from "./providers/markdownNew";
 import { fetchParallelMcp } from "./providers/parallel";
 import { acceptsSocialUrl, fetchSocial } from "./providers/social";
+import { fetchTinyfish } from "./providers/tinyfish";
+import { fetchWayback } from "./providers/wayback";
 import { defaultYtDlpPath } from "./providers/ytDlp";
 import type { Json } from "../http";
 import type { FetchFormat, Fetcher, FetchResult, Page, PageFormat } from "./types";
@@ -20,7 +23,9 @@ export { pageFromHtml } from "./providers/page";
 export { pageFromExa } from "./providers/exa";
 export { pageFromFirecrawl } from "./providers/firecrawl";
 export { pageFromJina } from "./providers/jina";
+export { pageFromMarkdownNew } from "./providers/markdownNew";
 export { pageFromParallel } from "./providers/parallel";
+export { pageFromTinyfish } from "./providers/tinyfish";
 export type { FetchFormat, FetchedPage, Fetcher, FetchContext, FetchResult, Page, PageFormat, PageMetadata } from "./types";
 
 export const fetchers = {
@@ -34,10 +39,13 @@ export const fetchers = {
   direct: { kind: "local", formats: ["markdown", "html", "rawHtml", "links"], fetch: fetchDirect },
   browser: { kind: "browser", available: () => agentBrowserPath() !== null, formats: ["markdown"], fetch: fetchInBrowser },
   "jina-reader": { kind: "public", formats: ["markdown", "html"], fetch: fetchJina },
+  "markdown-new": { kind: "public", formats: ["markdown"], fetch: fetchMarkdownNew },
   "firecrawl-free": { kind: "public", formats: ["markdown", "html", "rawHtml", "links"], fetch: fetchFirecrawl },
   "exa-mcp": { kind: "mcp", formats: ["markdown"], fetch: fetchExaMcp },
   "parallel-mcp": { kind: "mcp", formats: ["markdown"], fetch: fetchParallelMcp },
+  wayback: { kind: "public", manual: true, formats: ["markdown", "html"], fetch: fetchWayback },
   jina: { kind: "api", env: "JINA_API_KEY", formats: ["markdown", "html"], fetch: fetchJina },
+  tinyfish: { kind: "api", env: "TINYFISH_API_KEY", formats: ["markdown", "html"], fetch: fetchTinyfish },
   firecrawl: { kind: "api", env: "FIRECRAWL_API_KEY", formats: ["markdown", "html", "rawHtml", "links", "json"], fetch: fetchFirecrawl },
 } satisfies Record<string, Fetcher>;
 
@@ -88,7 +96,7 @@ export function createFetch<R extends Record<string, Fetcher>>(
       const error = await blockedUrl(url, options.resolve);
       if (error) return { success: false, error };
     }
-    const configured = (only ?? router.ids).filter(router.isReady);
+    const configured = (only ?? router.ids.filter((id) => !router.get(id).manual)).filter(router.isReady);
     const ready = configured.filter((id) => {
       const fetcher = router.get(id);
       return formats.every((format) => fetcher.formats.includes(format)) && (fetcher.accepts?.(url) ?? true);

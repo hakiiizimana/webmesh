@@ -1,6 +1,5 @@
 import { parseHTML } from "linkedom";
 
-// Return absolute navigable links in document order, keeping the first occurrence.
 export function linksFromHtml(html: string, url: string): string[] {
   const { document } = parseHTML(html);
   const links = new Set<string>();

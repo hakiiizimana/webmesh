@@ -1,4 +1,18 @@
-export { agentBrowserPath, browserEnv, createBrowser, launchFlags, LOGIN_STATE, type BrowserResult } from "./browser";
+export {
+  agentBrowserPath,
+  BROWSER_ALIASES,
+  browserEnv,
+  browserReference,
+  browserUsage,
+  createBrowser,
+  ensureBrowser,
+  launchFlags,
+  LOGIN_STATE,
+  prepareBrowserCommand,
+  WEBMESH_BROWSER_COMMANDS,
+  type BrowserResult,
+  type PreparedBrowserCommand,
+} from "./browser";
 export { checkProviders, keyNames, type CheckResult } from "./check";
 export { isProviderId, type ProviderId } from "./config";
 export {

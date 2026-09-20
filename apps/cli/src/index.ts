@@ -7,8 +7,11 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import {
   agentBrowserPath,
   browserEnv,
+  browserReference,
+  browserUsage,
   checkProviders,
   createBrowser,
+  ensureBrowser,
   LOGIN_STATE,
   createFetch,
   createSearch,
@@ -20,6 +23,7 @@ import {
   maskProxy,
   mergeEnv,
   openStore,
+  prepareBrowserCommand,
   providers,
   usesProxy,
   type FetchResult,
@@ -245,17 +249,17 @@ async function serveMcp() {
       {
         title: "Browser",
         description:
-          "Drive a real Chrome browser: open pages, click, type, read, and take screenshots. Pass one agent-browser command as args. " +
+          "Drive a real Chrome browser: open pages, click, type, read, and take screenshots. Pass one browser command as args. " +
           'Loop: ["open", url], then ["snapshot", "-i"] to list interactive elements as @e1, @e2, then ["click", "@e2"], ' +
           '["fill", "@e3", "text"], or ["press", "Enter"]. Run ["snapshot", "-i"] again after the page changes; refs go stale. ' +
           '["screenshot", "--annotate"] labels elements with their refs; add "--if-changed" to skip unchanged images. ' +
           '["read"] returns the rendered page as text. Also ["get", "text", "@e1"], ["select", "@e4", "value"], ["upload", "@e5", "/path"], ' +
-          '["scroll", "down"], ["tab", "list"], ["back"]. ["skills", "get", "core"] returns the full guide. ' +
-          "Use absolute paths for pdf, upload, and --screenshot-dir; relative paths resolve from agent-browser's background process. " +
+          '["scroll", "down"], ["tab", "list"], ["back"]. Run `webmesh browser --help` for the command list. ' +
+          "Use absolute paths for pdf, upload, and --screenshot-dir; relative paths resolve from the browser's background process. " +
           "Sessions start with the logins saved by `webmesh login`. Secrets in output are redacted. " +
           "The session belongs to this server and closes when it exits. Returns JSON: { success, data } or { success, error }.",
         inputSchema: {
-          args: z.array(z.string()).min(1).describe('One agent-browser command, e.g. ["click", "@e2"].'),
+          args: z.array(z.string()).min(1).describe('One browser command, e.g. ["click", "@e2"].'),
         },
       },
       async ({ args }) => {
@@ -299,7 +303,7 @@ webmesh fetch <url>        fetch one or more page representations (JSON)
       --schema-file <path>  JSON schema for the json format
       --max-characters <n>   cut content at n characters (default 50000)
   -p, --providers <a,b>      only use these fetchers
-webmesh browser <command>    drive Chrome with agent-browser, e.g. open <url>, snapshot -i, click @e2
+webmesh browser <command>    drive Chrome, e.g. open <url>, snapshot -i, click @e2
 webmesh setup                add webmesh to every coding agent found on this machine
   -a, --agent <name>         only this agent (claude-code, codex, cursor, pi, opencode)
       --remove               take webmesh out again
@@ -312,18 +316,35 @@ webmesh providers            list search and fetch providers with cooldowns and 
 webmesh mcp                  run the MCP server over stdio`;
 
 if (process.argv[2] === "browser") {
-  const bin = agentBrowserPath();
-  if (!bin) {
-    console.error("agent-browser is not installed.");
+  const args = process.argv.slice(3);
+  if (args.length === 1 && args[0] === "--all") {
+    console.log(browserReference());
+    process.exit(0);
+  }
+  if (args.length === 0 || args[0] === "help" || args[0] === "--full-help" || args.includes("--help") || args.includes("-h")) {
+    console.log(browserUsage());
+    process.exit(0);
+  }
+  const prepared = prepareBrowserCommand(args);
+  if ("error" in prepared) {
+    console.error(prepared.error);
     process.exit(1);
   }
-  const args = process.argv.slice(3);
-  const flag = (names: string[]) => args.some((arg) => names.some((name) => arg === name || arg.startsWith(`${name}=`)));
-  const session = flag(["--session"]) ? [] : ["--session", "webmesh"];
-  const own = flag(["--restore", "--profile", "--state", "--auto-connect", "--proxy"]);
-  const launch = own ? [] : await launchFlags(bin, { restore: LOGIN_STATE, proxy: settings.proxy });
-  const proc = Bun.spawn([process.execPath, bin, ...session, ...launch, ...args], {
-    env: browserEnv(own ? undefined : settings.proxy),
+  const bin = agentBrowserPath();
+  if (!bin) {
+    console.error("Webmesh browser support is not installed.");
+    process.exit(1);
+  }
+  if (prepared.args[0] !== "close") {
+    const installError = await ensureBrowser(bin);
+    if (installError) {
+      console.error(installError);
+      process.exit(1);
+    }
+  }
+  const launch = await launchFlags(bin, { restore: LOGIN_STATE, proxy: settings.proxy });
+  const proc = Bun.spawn([process.execPath, bin, "--session", "webmesh", ...launch, ...prepared.args], {
+    env: browserEnv(settings.proxy),
     stdio: ["inherit", "inherit", "inherit"],
   });
   process.exit(await proc.exited);
@@ -332,12 +353,17 @@ if (process.argv[2] === "browser") {
 if (process.argv[2] === "login" || process.argv[2] === "logout") {
   const bin = agentBrowserPath();
   if (!bin) {
-    console.error("agent-browser is not installed.");
+    console.error("Webmesh browser support is not installed.");
     process.exit(1);
   }
   const run = (args: string[]) =>
     Bun.spawn([process.execPath, bin, ...args], { env: browserEnv(settings.proxy), stdio: ["inherit", "inherit", "inherit"] }).exited;
   if (process.argv[2] === "logout") process.exit(await run(["state", "clear", LOGIN_STATE]));
+  const installError = await ensureBrowser(bin);
+  if (installError) {
+    console.error(installError);
+    process.exit(1);
+  }
   const url = pageUrl.safeParse(process.argv[3]);
   if (!url.success) {
     console.error("Usage: webmesh login <url>");

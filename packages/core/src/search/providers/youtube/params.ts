@@ -40,7 +40,7 @@ export const youtubeSearchParamsFor = (filters: SearchFilters): string => {
   const filterBytes: number[] = [];
   const uploadDate = uploadDateValue(filters.freshness);
   if (uploadDate !== 0) appendField(filterBytes, 1, uploadDate);
-  appendField(filterBytes, 2, 1); // video
+  appendField(filterBytes, 2, 1);
 
   const params: number[] = [];
   appendVarint(params, (2 << 3) | 2);

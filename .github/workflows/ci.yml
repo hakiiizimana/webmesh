@@ -13,8 +13,12 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version-file: package.json
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: tools/html-to-markdown/go.mod
       - run: bun install --frozen-lockfile
       - run: bun run check-types
       - run: bun run check-slop
       - run: bun run test
       - run: bun run build
+      - run: tools/html-to-markdown/smoke.sh

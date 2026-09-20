@@ -70,6 +70,8 @@ async function probeFetcher(
 ): Promise<CheckResult | undefined> {
   const key = fetcher.env ? (env[fetcher.env] ?? "") : "";
   if ((fetcher.env && !key) || !(fetcher.available?.() ?? true)) return undefined;
+  // Do not mark URL-specific fetchers broken for rejecting the probe page.
+  if (fetcher.accepts && !fetcher.accepts(PAGE)) return undefined;
   return probe("fetch", id, async (signal) => {
     const page = await fetcher.fetch(PAGE, {
       format: "markdown",

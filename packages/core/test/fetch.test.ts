@@ -8,7 +8,9 @@ import {
   pageFromFirecrawl,
   pageFromHtml,
   pageFromJina,
+  pageFromMarkdownNew,
   pageFromParallel,
+  pageFromTinyfish,
 } from "../src/fetch";
 import { HttpError } from "../src/http";
 import { TargetError } from "../src/router";
@@ -71,6 +73,55 @@ test("reads reader responses and reports failed pages as the page's fault", () =
   });
   expect(pageFromJina(JSON.stringify({ data: { url: "https://a.com", title: "A", html: "<p>x</p>" } })).content).toBe("<p>x</p>");
   expect(() => pageFromJina(JSON.stringify({ data: { url: "https://a.com", content: "", httpStatus: 404 } }))).toThrow(TargetError);
+});
+
+test("reads the markdown.new preamble and tolerates a page without one", () => {
+  const withPreamble = pageFromMarkdownNew(
+    "Title: Example Domain\n\nURL Source: https://example.com\n\nPublished Time: 2026-04-01\n\nMarkdown Content:\n# Example Domain\n\nBody text",
+    "https://fallback.example",
+  );
+  expect(withPreamble).toEqual({
+    url: "https://example.com",
+    title: "Example Domain",
+    content: "# Example Domain\n\nBody text",
+    publishedAt: "2026-04-01",
+  });
+
+  const bare = pageFromMarkdownNew("# Just markdown\n\nNo preamble here", "https://fallback.example");
+  expect(bare).toMatchObject({ url: "https://fallback.example", content: "# Just markdown\n\nNo preamble here" });
+});
+
+test("reads tinyfish fetch results and rejects an empty result list", () => {
+  const page = pageFromTinyfish(
+    JSON.stringify({
+      results: [
+        { url: "https://example.com", title: "Example Domain", text: "# Example Domain", published_date: "2026-02-03" },
+      ],
+    }),
+    "https://fallback.example",
+  );
+  expect(page).toEqual({
+    url: "https://example.com",
+    title: "Example Domain",
+    content: "# Example Domain",
+    publishedAt: "2026-02-03",
+  });
+  expect(() => pageFromTinyfish(JSON.stringify({ results: [] }), "https://fallback.example")).toThrow("no page");
+});
+
+test("keeps manual fetchers out of the default pool until a caller names them", async () => {
+  const registry = {
+    live: fetcher(page("from live")),
+    archive: Object.assign(fetcher(page("from archive")), { manual: true }),
+  };
+  const { fetch } = setup(registry);
+
+  const automatic = await fetch("https://a.com");
+  expect(automatic).toMatchObject({ success: true, data: { content: "from live" } });
+  expect(registry.archive.calls).toHaveLength(0);
+
+  const named = await fetch("https://a.com", { only: ["archive"] });
+  expect(named).toMatchObject({ success: true, data: { content: "from archive" } });
 });
 
 test("falls back to a reader when the local fetch fails, and never cools the local fetcher down", async () => {
