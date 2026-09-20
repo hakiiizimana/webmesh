@@ -1,13 +1,17 @@
 #!/usr/bin/env bun
 import { parseArgs } from "node:util";
+import { readFileSync } from "node:fs";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import {
   agentBrowserPath,
   browserEnv,
+  browserReference,
+  browserUsage,
   checkProviders,
   createBrowser,
+  ensureBrowser,
   LOGIN_STATE,
   createFetch,
   createSearch,
@@ -19,6 +23,7 @@ import {
   maskProxy,
   mergeEnv,
   openStore,
+  prepareBrowserCommand,
   providers,
   usesProxy,
   type FetchResult,
@@ -50,7 +55,9 @@ const fetcher = createFetch(fetchers, {
 
 const limitSchema = z.number().int().min(1).max(20);
 const pageUrl = z.url({ protocol: /^https?$/ });
-const formatSchema = z.enum(["markdown", "html"]);
+const fetchFormatSchema = z.enum(["markdown", "html", "rawHtml", "links", "json"]);
+const fetchFormatsSchema = z.array(fetchFormatSchema).min(1).max(5);
+const extractionSchema = z.record(z.string(), z.json());
 const maxCharactersSchema = z.number().int().min(1_000).max(1_000_000);
 const screenshot = z.object({ path: z.string().regex(/\.(png|jpe?g|webp)$/i) });
 const IMAGE_TYPES = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", webp: "image/webp" } as const;
@@ -137,19 +144,30 @@ async function runSearch(
 
 async function runFetch(
   url: string | undefined,
-  { format, maxCharacters, only }: { format?: string; maxCharacters?: string; only?: string } = {},
+  { formats, schemaFile, maxCharacters, only }: { formats?: string; schemaFile?: string; maxCharacters?: string; only?: string } = {},
 ): Promise<FetchResult> {
   const parsedUrl = pageUrl.safeParse(url);
   if (!parsedUrl.success) return { success: false, error: "Pass an http or https URL." };
-  const parsedFormat = formatSchema.optional().safeParse(format);
-  if (!parsedFormat.success) return { success: false, error: "Format must be markdown or html." };
+  const parsedFormats = formats === undefined ? undefined : fetchFormatsSchema.safeParse(list(formats));
+  if (parsedFormats && !parsedFormats.success) return { success: false, error: "Formats must be markdown, html, rawHtml, links, or json." };
+  let schema: z.infer<typeof extractionSchema> | undefined;
+  if (schemaFile) {
+    try {
+      const parsed = extractionSchema.safeParse(JSON.parse(readFileSync(schemaFile, "utf8")));
+      if (!parsed.success) return { success: false, error: "Schema file must contain a JSON object." };
+      schema = parsed.data;
+    } catch {
+      return { success: false, error: `Could not read schema file: ${schemaFile}.` };
+    }
+  }
   const parsedMax = maxCharacters === undefined ? undefined : maxCharactersSchema.safeParse(Number(maxCharacters));
   if (parsedMax && !parsedMax.success) return { success: false, error: "Max characters must be a whole number from 1000 to 1000000." };
   const requested = only?.split(",").map((id) => id.trim());
   const unknown = requested?.filter((id) => !isFetcherId(id));
   if (unknown?.length) return { success: false, error: `Unknown fetcher(s): ${unknown.join(", ")}.` };
   return fetcher.fetch(parsedUrl.data, {
-    format: parsedFormat.data,
+    formats: parsedFormats?.data,
+    schema,
     maxCharacters: parsedMax?.data,
     only: requested?.filter(isFetcherId),
   });
@@ -188,23 +206,34 @@ async function serveMcp() {
     {
       title: "Fetch a page",
       description:
-        "Fetch a web page and return its main content as markdown (default) or HTML. " +
-        "Returns JSON: { success, provider, attempts, data: { url, title, format, content, truncated, publishedAt? } }. " +
+        "Fetch a web page and return one or more representations: markdown, cleaned HTML, raw HTML, links, or schema-shaped JSON. " +
+        "Returns JSON: { success, data: { url, title, format, content, metadata, rawHtml?, links?, json?, truncated } }. " +
         "Tries a local fetch first, then remote readers, and uses keyed readers only when free ones can't answer.",
       inputSchema: {
         url: pageUrl.describe("The http or https page to fetch."),
-        format: formatSchema.optional().describe("markdown (default) or html."),
+        format: fetchFormatSchema.optional().describe("One format; markdown is the default."),
+        formats: fetchFormatsSchema.optional().describe("One or more output formats."),
+        schema: extractionSchema.optional().describe("JSON Schema-like object used when formats includes json."),
         maxCharacters: maxCharactersSchema.optional().describe("Cut the content at this many characters (default 50000)."),
         providers: z.array(z.string()).optional().describe("Only use these fetcher IDs."),
       },
     },
-    async ({ url, format, maxCharacters, providers: requested }) => {
+    async ({ url, format, formats, schema, maxCharacters, providers: requested }) => {
+      if (format && formats) {
+        const result: FetchResult = { success: false, error: "Pass format or formats, not both." };
+        return { content: [{ type: "text", text: JSON.stringify(result) }], isError: true };
+      }
       const unknown = requested?.filter((id) => !isFetcherId(id));
       if (unknown?.length) {
         const result: FetchResult = { success: false, error: `Unknown fetcher(s): ${unknown.join(", ")}.` };
         return { content: [{ type: "text", text: JSON.stringify(result) }], isError: true };
       }
-      const result = await fetcher.fetch(url, { format, maxCharacters, only: requested?.filter(isFetcherId) });
+      const result = await fetcher.fetch(url, {
+        formats: formats ?? (format ? [format] : undefined),
+        schema,
+        maxCharacters,
+        only: requested?.filter(isFetcherId),
+      });
       return { content: [{ type: "text", text: JSON.stringify(result) }], isError: !result.success };
     },
   );
@@ -220,17 +249,17 @@ async function serveMcp() {
       {
         title: "Browser",
         description:
-          "Drive a real Chrome browser: open pages, click, type, read, and take screenshots. Pass one agent-browser command as args. " +
+          "Drive a real Chrome browser: open pages, click, type, read, and take screenshots. Pass one browser command as args. " +
           'Loop: ["open", url], then ["snapshot", "-i"] to list interactive elements as @e1, @e2, then ["click", "@e2"], ' +
           '["fill", "@e3", "text"], or ["press", "Enter"]. Run ["snapshot", "-i"] again after the page changes; refs go stale. ' +
           '["screenshot", "--annotate"] labels elements with their refs; add "--if-changed" to skip unchanged images. ' +
           '["read"] returns the rendered page as text. Also ["get", "text", "@e1"], ["select", "@e4", "value"], ["upload", "@e5", "/path"], ' +
-          '["scroll", "down"], ["tab", "list"], ["back"]. ["skills", "get", "core"] returns the full guide. ' +
-          "Use absolute paths for pdf, upload, and --screenshot-dir; relative paths resolve from agent-browser's background process. " +
+          '["scroll", "down"], ["tab", "list"], ["back"]. Run `webmesh browser --help` for the command list. ' +
+          "Use absolute paths for pdf, upload, and --screenshot-dir; relative paths resolve from the browser's background process. " +
           "Sessions start with the logins saved by `webmesh login`. Secrets in output are redacted. " +
           "The session belongs to this server and closes when it exits. Returns JSON: { success, data } or { success, error }.",
         inputSchema: {
-          args: z.array(z.string()).min(1).describe('One agent-browser command, e.g. ["click", "@e2"].'),
+          args: z.array(z.string()).min(1).describe('One browser command, e.g. ["click", "@e2"].'),
         },
       },
       async ({ args }) => {
@@ -268,11 +297,13 @@ const USAGE = `webmesh search <query>     search the web (JSON)
       --safe-search <strict|moderate|off>
       --exact-match
       --search-depth <fast|deep>
-webmesh fetch <url>        fetch a page as markdown or HTML (JSON)
-      --format <markdown|html>
+webmesh fetch <url>        fetch one or more page representations (JSON)
+      --format <markdown|html|rawHtml|links|json>
+                              comma-separate formats, default: markdown
+      --schema-file <path>  JSON schema for the json format
       --max-characters <n>   cut content at n characters (default 50000)
   -p, --providers <a,b>      only use these fetchers
-webmesh browser <command>    drive Chrome with agent-browser, e.g. open <url>, snapshot -i, click @e2
+webmesh browser <command>    drive Chrome, e.g. open <url>, snapshot -i, click @e2
 webmesh setup                add webmesh to every coding agent found on this machine
   -a, --agent <name>         only this agent (claude-code, codex, cursor, pi, opencode)
       --remove               take webmesh out again
@@ -285,18 +316,35 @@ webmesh providers            list search and fetch providers with cooldowns and 
 webmesh mcp                  run the MCP server over stdio`;
 
 if (process.argv[2] === "browser") {
-  const bin = agentBrowserPath();
-  if (!bin) {
-    console.error("agent-browser is not installed.");
+  const args = process.argv.slice(3);
+  if (args.length === 1 && args[0] === "--all") {
+    console.log(browserReference());
+    process.exit(0);
+  }
+  if (args.length === 0 || args[0] === "help" || args[0] === "--full-help" || args.includes("--help") || args.includes("-h")) {
+    console.log(browserUsage());
+    process.exit(0);
+  }
+  const prepared = prepareBrowserCommand(args);
+  if ("error" in prepared) {
+    console.error(prepared.error);
     process.exit(1);
   }
-  const args = process.argv.slice(3);
-  const flag = (names: string[]) => args.some((arg) => names.some((name) => arg === name || arg.startsWith(`${name}=`)));
-  const session = flag(["--session"]) ? [] : ["--session", "webmesh"];
-  const own = flag(["--restore", "--profile", "--state", "--auto-connect", "--proxy"]);
-  const launch = own ? [] : await launchFlags(bin, { restore: LOGIN_STATE, proxy: settings.proxy });
-  const proc = Bun.spawn([process.execPath, bin, ...session, ...launch, ...args], {
-    env: browserEnv(own ? undefined : settings.proxy),
+  const bin = agentBrowserPath();
+  if (!bin) {
+    console.error("Webmesh browser support is not installed.");
+    process.exit(1);
+  }
+  if (prepared.args[0] !== "close") {
+    const installError = await ensureBrowser(bin);
+    if (installError) {
+      console.error(installError);
+      process.exit(1);
+    }
+  }
+  const launch = await launchFlags(bin, { restore: LOGIN_STATE, proxy: settings.proxy });
+  const proc = Bun.spawn([process.execPath, bin, "--session", "webmesh", ...launch, ...prepared.args], {
+    env: browserEnv(settings.proxy),
     stdio: ["inherit", "inherit", "inherit"],
   });
   process.exit(await proc.exited);
@@ -305,12 +353,17 @@ if (process.argv[2] === "browser") {
 if (process.argv[2] === "login" || process.argv[2] === "logout") {
   const bin = agentBrowserPath();
   if (!bin) {
-    console.error("agent-browser is not installed.");
+    console.error("Webmesh browser support is not installed.");
     process.exit(1);
   }
   const run = (args: string[]) =>
     Bun.spawn([process.execPath, bin, ...args], { env: browserEnv(settings.proxy), stdio: ["inherit", "inherit", "inherit"] }).exited;
   if (process.argv[2] === "logout") process.exit(await run(["state", "clear", LOGIN_STATE]));
+  const installError = await ensureBrowser(bin);
+  if (installError) {
+    console.error(installError);
+    process.exit(1);
+  }
   const url = pageUrl.safeParse(process.argv[3]);
   if (!url.success) {
     console.error("Usage: webmesh login <url>");
@@ -340,6 +393,7 @@ const { values, positionals } = parseArgs({
     "exact-match": { type: "boolean" },
     "search-depth": { type: "string" },
     format: { type: "string" },
+    "schema-file": { type: "string" },
     "max-characters": { type: "string" },
     agent: { type: "string", short: "a" },
     remove: { type: "boolean" },
@@ -373,7 +427,8 @@ if (command === "search" && !values.help) {
   if (!result.success) process.exitCode = 1;
 } else if (command === "fetch" && !values.help) {
   const result = await runFetch(rest[0], {
-    format: values.format,
+    formats: values.format,
+    schemaFile: values["schema-file"],
     maxCharacters: values["max-characters"],
     only: values.providers,
   });

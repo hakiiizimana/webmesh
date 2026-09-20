@@ -4,6 +4,8 @@ node_modules
 # output
 out
 dist
+# static binaries built by tools/html-to-markdown/build.sh
+packages/core/bin
 # copied into the CLI package by its build script
 apps/cli/README.md
 apps/cli/LICENSE

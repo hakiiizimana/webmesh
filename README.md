@@ -1,60 +1,70 @@
 # webmesh
 
-Search, fetch, and browse the web from your AI agent. webmesh is one MCP server with three tools: `web_search`, `web_fetch`, and `browser`.
+Web search, page reading, and browser control for you and your AI agents.
 
-It runs on your machine and needs [Bun](https://bun.sh) 1.3 or later. Requests go out from your IP.
+Run Webmesh from the terminal, or add it to your coding agent. It runs locally and requests leave from your IP.
 
 ## Install
 
-Install it once:
+Webmesh needs [Bun](https://bun.sh) 1.4.1 or newer.
 
 ```sh
-bun add -g @webmesh/cli
+npm install -g @webmesh/cli
 ```
 
-`npm install -g @webmesh/cli` works too. Either way, Bun has to be on your PATH.
+`bun add -g @webmesh/cli` works too.
 
-Then run `webmesh setup`. It adds webmesh to every coding agent it finds on your machine.
+The installer uses Chrome or Chromium already on your machine. If neither is installed, it downloads Chromium for browser commands.
 
-Or add it by hand. Claude Code:
+## Use it from the terminal
 
 ```sh
-claude mcp add webmesh -s user -- webmesh mcp
+webmesh search "sqlite wal mode"
+webmesh fetch https://sqlite.org/wal.html
+webmesh browser open https://example.com
 ```
 
-Codex, in `~/.codex/config.toml`:
+`search` finds sources. `fetch` reads a URL and returns page content. `browser` opens a real browser for pages that need clicks, JavaScript, downloads, or a login.
+
+Run `webmesh --help` for every command. Run `webmesh browser --help` for browser commands.
+
+## Use it with your agent
+
+```sh
+webmesh setup
+```
+
+This adds Webmesh to the coding agents found on your machine. Restart the agent, then ask it to search the web, read a URL, or open a page.
+
+To add Webmesh yourself, point your agent's MCP configuration at:
 
 ```toml
+# ~/.codex/config.toml
 [mcp_servers.webmesh]
 command = "webmesh"
 args = ["mcp"]
 ```
 
-Cursor, in `~/.cursor/mcp.json`:
+## Add an API key
 
-```json
-{ "mcpServers": { "webmesh": { "command": "webmesh", "args": ["mcp"] } } }
-```
+Webmesh works without API keys. Add one when you want to use a paid provider.
 
-No API keys needed. To add a paid provider, save its key with `webmesh setup key <NAME>` and it joins as a fallback. `webmesh providers` prints the variable each one reads.
-
-Getting blocked? `webmesh setup proxy <url>` sends scrapers, local fetches, and anonymous browsing through a proxy. Sites you logged into and API calls stay direct, so logins don't get flagged.
-
-`web_fetch` and the MCP browser block loopback, private, and link-local destinations after DNS resolution. Set `"allowPrivateNetworks": true` in `~/.config/webmesh/config.json` only when agents should reach services on your local network.
-
-webmesh ships its own copy of [agent-browser](https://agent-browser.dev) and drives the Chrome or Chromium you already have. With neither installed, run `webmesh browser install`. Run `webmesh login <url>` once to log in to a site, and browser sessions start logged in after that.
-
-## Use it from the terminal
+For example, to add an Exa key:
 
 ```sh
-webmesh search "sqlite wal mode" -n 5 --freshness week
-webmesh fetch https://sqlite.org/wal.html
-webmesh browser open https://example.com
-webmesh browser snapshot -i
+webmesh setup key EXA_API_KEY
 ```
 
-Search and fetch print JSON. Run `webmesh --help` for every flag.
+Webmesh asks you to paste the actual key, then saves it locally. Run `webmesh providers` to see available providers and the key name each one expects.
+
+## Log in to a site
+
+```sh
+webmesh login https://example.com
+```
+
+Log in in the browser window, then press Enter in the terminal. Webmesh saves that login for later browser sessions. Run `webmesh logout` to remove saved logins.
 
 ## License
 
-MIT
+MIT. See `THIRD_PARTY_NOTICES.txt` in the published package for bundled third-party notices.

@@ -1,6 +1,6 @@
 {
   "name": "@webmesh/cli",
-  "version": "0.1.0",
+  "version": "0.0.1",
   "description": "Search, fetch, and browse the web from your AI agent.",
   "license": "MIT",
   "type": "module",
@@ -9,19 +9,22 @@
     "webmesh": "dist/webmesh.js"
   },
   "files": [
-    "dist"
+    "dist",
+    "scripts",
+    "THIRD_PARTY_NOTICES.txt"
   ],
   "engines": {
-    "bun": ">=1.3.0"
+    "bun": ">=1.4.1"
   },
   "publishConfig": {
     "access": "public"
   },
   "scripts": {
-    "build": "bun build src/index.ts --target bun --outfile dist/webmesh.js --external wreq-js && mkdir -p dist/skills && cp -R ../../skills/* dist/skills/ && cp ../../README.md ../../LICENSE .",
+    "build": "bun build src/index.ts --target bun --outfile dist/webmesh.js --external wreq-js && mkdir -p dist/skills dist/bin && cp -R ../../skills/* dist/skills/ && cp -R ../../packages/core/bin/. dist/bin/ && cp ../../README.md ../../LICENSE .",
     "check-types": "tsc --noEmit",
     "test": "bun test",
-    "prepublishOnly": "bun run build"
+    "postinstall": "node scripts/install-browser.mjs",
+    "prepack": "bun run --cwd ../.. build:binaries && bun run build"
   },
   "dependencies": {
     "agent-browser": "0.38.1",

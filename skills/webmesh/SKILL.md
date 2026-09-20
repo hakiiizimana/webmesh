@@ -1,30 +1,20 @@
 ---
 name: webmesh
-description: Route web research to Webmesh search, fetch, and browser tools when an agent needs current public information.
+description: Use when the user asks to search online, find current information, read a URL, research a topic, check documentation or news, or interact with a webpage. Run the webmesh CLI.
 ---
 
 # Webmesh
 
-Choose the smallest tool that answers the question.
+Run the CLI from the shell.
 
-## Search
+1. If the user has no URL, run `webmesh search "query"`.
+2. If the user gives a URL, run `webmesh fetch "url"`.
+3. Fetch the strongest search results before using snippets as evidence.
+4. Use `webmesh browser ...` only for clicks, forms, scrolling, pagination, login, uploads, or screenshots.
+5. Run browser commands one at a time. Take a new `snapshot -i` after navigation because refs go stale.
+6. Use absolute paths for PDFs, uploads, and `--screenshot-dir`.
+7. Keep source URLs beside claims and label inferences as inferences.
+8. Use `webmesh login "url"` only when the user asks to save a login.
+9. If `webmesh` is unavailable, tell the user. Do not silently switch tools.
 
-Use `web_search` when the source or URL is unknown. Search with a specific question, then fetch the strongest results before relying on snippets.
-
-Use domain and date filters when the request names a site, time range, or news window. For important claims, compare more than one source.
-
-## Fetch
-
-Use `web_fetch` when a URL is already known and the task is to read it. Prefer it for articles, documentation, reports, product pages, and public profiles.
-
-Ask for markdown unless the task needs the original HTML. Fetch each important source separately and keep its URL with the extracted claims.
-
-## Browser
-
-Use the `webmesh-browser` skill and `browser` when the task needs interaction, rendered state, a saved login, pagination, screenshots, uploads, or a page that fetch cannot read.
-
-Do not use the browser for ordinary reading when `web_fetch` is enough.
-
-## Evidence
-
-Treat search snippets as leads, not evidence. Prefer the page returned by `web_fetch` or `browser.read`, report the source URL, and distinguish retrieved facts from inference.
+Stop when the answer is supported by fetched sources or the requested browser action is complete.

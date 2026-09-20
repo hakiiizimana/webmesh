@@ -33,13 +33,13 @@ test("installs, updates, and removes the project skill", () => {
   const root = mkdtempSync(join(tmpdir(), "webmesh-setup-"));
   const path = join(root, ".agents", "skills", "webmesh", "SKILL.md");
 
-  expect(applySkill(root, false, "webmesh", "first")).toBe("added");
-  expect(applySkill(root, false, "webmesh", "first")).toBe("already set");
-  expect(applySkill(root, false, "webmesh", "second")).toBe("updated");
+  expect(applySkill(root, false, "first")).toBe("added");
+  expect(applySkill(root, false, "first")).toBe("already set");
+  expect(applySkill(root, false, "second")).toBe("updated");
   expect(readFileSync(path, "utf8")).toBe("second");
   writeFileSync(join(root, ".agents", "skills", "webmesh", "notes.md"), "keep");
-  expect(applySkill(root, true, "webmesh")).toBe("removed");
+  expect(applySkill(root, true)).toBe("removed");
   expect(existsSync(path)).toBe(false);
   expect(existsSync(join(root, ".agents", "skills", "webmesh", "notes.md"))).toBe(true);
-  expect(applySkill(root, true, "webmesh")).toBe("not set");
+  expect(applySkill(root, true)).toBe("not set");
 });

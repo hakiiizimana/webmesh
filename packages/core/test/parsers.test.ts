@@ -5,9 +5,11 @@ import { parseDuckduckgoHtml, parseDuckduckgoLite } from "../src/search/provider
 import { parseExa, parseExaMcp } from "../src/search/providers/exa";
 import { parseFirecrawl } from "../src/search/providers/firecrawl";
 import { parseKeenable } from "../src/search/providers/keenable";
+import { parseMarginalia } from "../src/search/providers/marginalia";
 import { parseMwmbl } from "../src/search/providers/mwmbl";
 import { parseParallel } from "../src/search/providers/parallel";
 import { parseTavily } from "../src/search/providers/tavily";
+import { parseTinyfish } from "../src/search/providers/tinyfish";
 
 const QUERY = "rust ownership";
 
@@ -256,6 +258,56 @@ test("keenable parses clean public items using snippet or description", async ()
   expect(items).toEqual([
     { title: "Keenable Snippet", url: "https://k.example/1", description: "Snippet text", publishedAt: undefined },
     { title: "Keenable Desc", url: "https://k.example/2", description: "Description text", publishedAt: undefined },
+  ]);
+});
+
+test("marginalia parses results and tolerates a missing description", async () => {
+  const body = JSON.stringify({
+    query: QUERY,
+    license: "CC-BY-NC-SA",
+    results: [
+      { title: "Ownership - The Rust Book", url: "https://doc.rust-lang.org/book/ch04-00.html", description: "Ownership explained" },
+      { title: "Rust ownership notes", url: "https://notes.example/rust" },
+    ],
+  });
+  const items = await parseMarginalia(QUERY, body);
+  expect(items).toEqual([
+    {
+      title: "Ownership - The Rust Book",
+      url: "https://doc.rust-lang.org/book/ch04-00.html",
+      description: "Ownership explained",
+      publishedAt: undefined,
+    },
+    { title: "Rust ownership notes", url: "https://notes.example/rust", description: "", publishedAt: undefined },
+  ]);
+});
+
+test("tinyfish parses snippets, dates, and missing snippets", async () => {
+  const body = JSON.stringify({
+    query: QUERY,
+    total_results: 2,
+    page: 0,
+    results: [
+      {
+        position: 1,
+        site_name: "doc.rust-lang.org",
+        title: "Understanding Ownership",
+        snippet: "Ownership is Rust's most unique feature",
+        url: "https://doc.rust-lang.org/book/ch04-00.html",
+        date: "2026-03-04T00:00:00Z",
+      },
+      { position: 2, site_name: "notes.example", title: "No snippet", url: "https://notes.example/rust" },
+    ],
+  });
+  const items = await parseTinyfish(QUERY, body);
+  expect(items).toEqual([
+    {
+      title: "Understanding Ownership",
+      url: "https://doc.rust-lang.org/book/ch04-00.html",
+      description: "Ownership is Rust's most unique feature",
+      publishedAt: "2026-03-04",
+    },
+    { title: "No snippet", url: "https://notes.example/rust", description: "", publishedAt: undefined },
   ]);
 });
 

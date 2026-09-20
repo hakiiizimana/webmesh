@@ -1,34 +1,25 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { keyNames, loadSettings, maskProxy, proxyUrl, saveSettings, settingsPath } from "@webmesh/core";
+import { keyNames, loadSettings, maskProxy, proxyUrl, saveSettings, settingsPath, fetchers } from "@webmesh/core";
 import { z } from "zod";
 
 const NAME = "webmesh";
-const SKILL_NAMES = ["webmesh", "webmesh-browser", "setup-webmesh"] as const;
-const skillPath = (name: (typeof SKILL_NAMES)[number]) => join(".agents", "skills", name, "SKILL.md");
+const SKILL = join(".agents", "skills", NAME, "SKILL.md");
 const config = z.record(z.string(), z.json());
 type Entry = z.infer<typeof config>[string];
 
 export type Outcome = "added" | "updated" | "already set" | "removed" | "not set" | `skipped: ${string}` | `failed: ${string}`;
 
-function bundledSkill(name: (typeof SKILL_NAMES)[number]): string {
-  const paths = [
-    join(import.meta.dir, "..", "..", "..", "skills", name, "SKILL.md"),
-    join(import.meta.dir, "skills", name, "SKILL.md"),
-  ];
+function bundledSkill(): string {
+  const paths = [join(import.meta.dir, "..", "..", "..", "skills", NAME, "SKILL.md"), join(import.meta.dir, "skills", NAME, "SKILL.md")];
   const path = paths.find(existsSync);
-  if (!path) throw new Error(`The bundled ${name} skill is missing.`);
+  if (!path) throw new Error("The bundled Webmesh skill is missing.");
   return readFileSync(path, "utf8");
 }
 
-export function applySkill(
-  root: string,
-  remove: boolean,
-  name: (typeof SKILL_NAMES)[number] = NAME,
-  content = bundledSkill(name),
-): Outcome {
-  const path = join(root, skillPath(name));
+export function applySkill(root: string, remove: boolean, content = bundledSkill()): Outcome {
+  const path = join(root, SKILL);
   if (remove) {
     if (!existsSync(path)) return "not set";
     unlinkSync(path);
@@ -127,12 +118,16 @@ export async function setup(only: string | undefined, remove: boolean): Promise<
     lines.push(`${agent.name.padEnd(12)} ${agent.found() ? await agent.apply(remove) : "not found"}`);
   }
   if (!remove || !only) {
-    for (const name of SKILL_NAMES) {
-      lines.push(`${`skill ${name}`.padEnd(20)} ${applySkill(process.cwd(), remove, name)}`);
-    }
+    lines.push(`${"agent skill".padEnd(12)} ${applySkill(process.cwd(), remove)}`);
   }
   if (!remove && Bun.which("webmesh") === null) {
-    lines.push("", "webmesh isn't on your PATH, so agents can't start it. Install it with: bun add -g @webmesh/cli");
+    lines.push("", "webmesh isn't on your PATH, so agents can't start it. Install it with: npm install -g @webmesh/cli");
+  }
+  if (!remove && !(fetchers["yt-dlp"].available?.() ?? false)) {
+    lines.push(
+      "",
+      "YouTube and social fetch is off: no yt-dlp found. Install it with: brew install yt-dlp, pipx install yt-dlp, or drop a binary at packages/core/bin/yt-dlp",
+    );
   }
   if (!remove) lines.push("", "Restart your agents to load webmesh.");
   return lines;

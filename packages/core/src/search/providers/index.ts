@@ -4,9 +4,11 @@ import { duckduckgoHtml, duckduckgoLite } from "./duckduckgo";
 import { exa, exaMcp } from "./exa";
 import { firecrawl, firecrawlFree } from "./firecrawl";
 import { keenable, keenablePublic } from "./keenable";
+import { marginalia, marginaliaPublic } from "./marginalia";
 import { mwmbl } from "./mwmbl";
 import { parallel, parallelMcp } from "./parallel";
 import { tavily } from "./tavily";
+import { tinyfish } from "./tinyfish";
 import { youtube } from "./youtube";
 
 export const specs = {
@@ -16,6 +18,7 @@ export const specs = {
   "duckduckgo-html": duckduckgoHtml,
   "brave-web": braveWeb,
   mwmbl,
+  "marginalia-public": marginaliaPublic,
   "duckduckgo-lite": duckduckgoLite,
   "firecrawl-free": firecrawlFree,
   exa,
@@ -25,6 +28,8 @@ export const specs = {
   brave,
   youtube,
   firecrawl,
+  marginalia,
+  tinyfish,
 } satisfies Record<string, ProviderSpec>;
 
 export type ProviderId = keyof typeof specs;
