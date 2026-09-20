@@ -4,7 +4,6 @@ Search, read, and browse the web from a terminal or an agent.
 
 - `packages/core` — providers, router, fetch chain, browser, settings, state
 - `apps/cli` — the `webmesh` command and `webmesh mcp`
-- `apps/web` — the site
 - `skills/` — the skill files `webmesh setup` installs
 - `tools/html-to-markdown` — Go binary, built by `bun run build:binaries`
 
