@@ -246,10 +246,12 @@ function hasSystemBrowser(): boolean {
   return ["google-chrome", "google-chrome-stable", "chromium-browser", "chromium"].some((command) => Bun.which(command));
 }
 
-// MCP uses stdout for its protocol, so installation stays quiet.
+// MCP uses stdout for its protocol, so install progress goes to stderr and the
+// child's own output is captured instead of inherited.
 export function ensureBrowser(bin: string): Promise<string | undefined> {
   if (hasSystemBrowser()) return Promise.resolve(undefined);
   return (browserInstall ??= (async () => {
+    process.stderr.write("webmesh: downloading Chromium for browser commands (first use only)...\n");
     const proc = Bun.spawn([process.execPath, bin, "install"], { stdin: "ignore", stdout: "pipe", stderr: "pipe" });
     const [stdout, stderr, exitCode] = await Promise.all([
       new Response(proc.stdout).text(),
@@ -257,6 +259,7 @@ export function ensureBrowser(bin: string): Promise<string | undefined> {
       proc.exited,
     ]);
     if (exitCode === 0) return undefined;
+    browserInstall = undefined; // a failed download must not be cached for the life of the process
     const detail = (stderr || stdout).trim().split("\n")[0];
     return detail ? `Could not install Chromium: ${detail}` : "Could not install Chromium.";
   })());

@@ -1,4 +1,7 @@
 import { expect, test } from "bun:test";
+import { rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   browserUsage,
   createBrowser,
@@ -115,4 +118,40 @@ test("rejects browser URLs that resolve to private addresses", async () => {
     success: false,
     error: expect.stringContaining("private"),
   });
+});
+
+test("retries a failed Chromium download instead of caching the error", async () => {
+  // Bun.which reads PATH once at startup, and hasSystemBrowser() probes fixed paths on
+  // darwin/win32, so the download path needs a child process that looks like linux.
+  const ok = join(tmpdir(), `webmesh-install-${crypto.randomUUID()}.mjs`);
+  const script = `
+    const { ensureBrowser } = await import(${JSON.stringify(new URL("../src/browser.ts", import.meta.url).href)});
+    Object.defineProperty(process, "platform", { value: "linux" });
+    const ok = ${JSON.stringify(ok)};
+    await Bun.write(ok, ""); // any script exiting 0 stands in for a download that worked
+    console.log(JSON.stringify({
+      failed: (await ensureBrowser("/nonexistent/agent-browser.js")) ?? null,
+      retried: (await ensureBrowser(ok)) ?? null,
+    }));
+  `;
+  try {
+    const proc = Bun.spawn([process.execPath, "-e", script], {
+      env: { ...process.env, PATH: "" },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [stdout, stderr] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+      proc.exited,
+    ]);
+
+    expect(stderr).toContain("downloading Chromium");
+    expect(JSON.parse(stdout.trim().split("\n").findLast((line) => line.startsWith("{")) ?? "null")).toEqual({
+      failed: expect.stringContaining("Could not install Chromium"),
+      retried: null, // the failed download was not cached
+    });
+  } finally {
+    await rm(ok, { force: true });
+  }
 });
