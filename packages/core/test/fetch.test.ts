@@ -141,6 +141,65 @@ test("only asks fetchers that can return the requested format", async () => {
   expect(registry.markdownOnly.calls).toHaveLength(0);
 });
 
+test("returns raw HTML, links, and normalized source metadata beside markdown", async () => {
+  const html = `<html><head><title>Data page</title></head><body><article><p>${"Useful document text. ".repeat(30)}</p>
+  <a href="/guide">Guide</a><a href="https://other.example/item">Other</a></article></body></html>`;
+  const server = Bun.serve({
+    port: 0,
+    fetch: () => new Response(html, { headers: { "content-type": "text/html; charset=utf-8", "content-language": "en" } }),
+  });
+  try {
+    const result = await createFetch(
+      { direct: fetchers.direct },
+      { store: memoryStore(), env: {}, allowPrivateNetworks: true },
+    ).fetch(`http://127.0.0.1:${server.port}/data`, { formats: ["markdown", "rawHtml", "links"] });
+
+    expect(result).toMatchObject({
+      success: true,
+      data: {
+        rawHtml: html,
+        links: [`http://127.0.0.1:${server.port}/guide`, "https://other.example/item"],
+        metadata: {
+          sourceURL: `http://127.0.0.1:${server.port}/data`,
+          url: `http://127.0.0.1:${server.port}/data`,
+          title: "Data page",
+          language: "en",
+          statusCode: 200,
+          contentType: "text/html; charset=utf-8",
+          contentHash: expect.stringMatching(/^sha256:/),
+        },
+      },
+    });
+  } finally {
+    server.stop(true);
+  }
+});
+
+test("passes a schema to JSON-capable fetchers and requires it for JSON output", async () => {
+  let receivedSchema: unknown;
+  const extractor: Fetcher = {
+    kind: "api",
+    formats: ["markdown", "json"],
+    async fetch(_url, context) {
+      receivedSchema = context.schema;
+      return { url: "https://a.com", title: "A", content: "page text", json: { name: "Webmesh" } };
+    },
+  };
+  const schema = {
+    type: "object",
+    properties: { name: { type: "string" } },
+    required: ["name"],
+  };
+  const client = setup({ extractor });
+
+  const extracted = await client.fetch("https://a.com", { formats: ["markdown", "json"], schema });
+  const missingSchema = await client.fetch("https://a.com", { formats: ["json"] });
+
+  expect(extracted).toMatchObject({ success: true, data: { json: { name: "Webmesh" } } });
+  expect(receivedSchema).toEqual(schema);
+  expect(missingSchema).toEqual({ success: false, error: "JSON extraction needs a schema." });
+});
+
 test("cuts content at maxCharacters and says so", async () => {
   const result = await setup({ reader: fetcher(page("x".repeat(1_500))) }).fetch("https://a.com", { maxCharacters: 1_000 });
   expect(result.success && [result.data.content.length, result.data.truncated]).toEqual([1_000, true]);
@@ -249,6 +308,38 @@ test("preserves markdown content from remote reader responses", () => {
     "https://example.com",
   );
   expect(parallel.content).toBe(markdown);
+});
+
+test("keeps Firecrawl's optional data representations and response metadata", () => {
+  const page = pageFromFirecrawl(
+    JSON.stringify({
+      data: {
+        markdown: "# Title\n\nContent",
+        rawHtml: "<h1>Title</h1><p>Content</p>",
+        links: ["https://example.com/next"],
+        json: { name: "Example" },
+        metadata: {
+          url: "https://example.com/final",
+          title: "Title",
+          language: "en",
+          statusCode: 200,
+          contentType: "text/html",
+          scrapeId: "scrape_123",
+          cacheState: "hit",
+        },
+      },
+    }),
+    "https://example.com/source",
+    "markdown",
+  );
+
+  expect(page).toMatchObject({
+    url: "https://example.com/final",
+    rawHtml: "<h1>Title</h1><p>Content</p>",
+    links: ["https://example.com/next"],
+    json: { name: "Example" },
+    metadata: { language: "en", statusCode: 200, contentType: "text/html", scrapeId: "scrape_123", cacheState: "hit" },
+  });
 });
 
 test("normalizes HTML entity encoding in title and extracts clean markdown", async () => {
@@ -499,7 +590,7 @@ test("marks truncated as false when content length fits within maxCharacters", a
   });
 });
 
-test("produces clean public page data with trimmed content and correct shape", async () => {
+test("produces clean public page data with trimmed content and source metadata", async () => {
   const messyPage = fetcher({
     url: "https://clean.example/page",
     title: "Clean Public Title",
@@ -508,7 +599,7 @@ test("produces clean public page data with trimmed content and correct shape", a
   });
   const result = await setup({ messyPage }).fetch("https://clean.example/page", { format: "markdown" });
 
-  expect(result).toEqual({
+  expect(result).toMatchObject({
     success: true,
     data: {
       url: "https://clean.example/page",
@@ -517,6 +608,14 @@ test("produces clean public page data with trimmed content and correct shape", a
       publishedAt: "2026-04-01",
       format: "markdown",
       truncated: false,
+      metadata: {
+        sourceURL: "https://clean.example/page",
+        url: "https://clean.example/page",
+        title: "Clean Public Title",
+        publishedAt: "2026-04-01",
+        contentHash: expect.stringMatching(/^sha256:/),
+        fetchedAt: expect.any(String),
+      },
     },
   });
 });

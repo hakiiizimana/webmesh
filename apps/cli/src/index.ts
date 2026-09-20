@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 import { parseArgs } from "node:util";
+import { readFileSync } from "node:fs";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
@@ -50,7 +51,9 @@ const fetcher = createFetch(fetchers, {
 
 const limitSchema = z.number().int().min(1).max(20);
 const pageUrl = z.url({ protocol: /^https?$/ });
-const formatSchema = z.enum(["markdown", "html"]);
+const fetchFormatSchema = z.enum(["markdown", "html", "rawHtml", "links", "json"]);
+const fetchFormatsSchema = z.array(fetchFormatSchema).min(1).max(5);
+const extractionSchema = z.record(z.string(), z.json());
 const maxCharactersSchema = z.number().int().min(1_000).max(1_000_000);
 const screenshot = z.object({ path: z.string().regex(/\.(png|jpe?g|webp)$/i) });
 const IMAGE_TYPES = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", webp: "image/webp" } as const;
@@ -137,19 +140,30 @@ async function runSearch(
 
 async function runFetch(
   url: string | undefined,
-  { format, maxCharacters, only }: { format?: string; maxCharacters?: string; only?: string } = {},
+  { formats, schemaFile, maxCharacters, only }: { formats?: string; schemaFile?: string; maxCharacters?: string; only?: string } = {},
 ): Promise<FetchResult> {
   const parsedUrl = pageUrl.safeParse(url);
   if (!parsedUrl.success) return { success: false, error: "Pass an http or https URL." };
-  const parsedFormat = formatSchema.optional().safeParse(format);
-  if (!parsedFormat.success) return { success: false, error: "Format must be markdown or html." };
+  const parsedFormats = formats === undefined ? undefined : fetchFormatsSchema.safeParse(list(formats));
+  if (parsedFormats && !parsedFormats.success) return { success: false, error: "Formats must be markdown, html, rawHtml, links, or json." };
+  let schema: z.infer<typeof extractionSchema> | undefined;
+  if (schemaFile) {
+    try {
+      const parsed = extractionSchema.safeParse(JSON.parse(readFileSync(schemaFile, "utf8")));
+      if (!parsed.success) return { success: false, error: "Schema file must contain a JSON object." };
+      schema = parsed.data;
+    } catch {
+      return { success: false, error: `Could not read schema file: ${schemaFile}.` };
+    }
+  }
   const parsedMax = maxCharacters === undefined ? undefined : maxCharactersSchema.safeParse(Number(maxCharacters));
   if (parsedMax && !parsedMax.success) return { success: false, error: "Max characters must be a whole number from 1000 to 1000000." };
   const requested = only?.split(",").map((id) => id.trim());
   const unknown = requested?.filter((id) => !isFetcherId(id));
   if (unknown?.length) return { success: false, error: `Unknown fetcher(s): ${unknown.join(", ")}.` };
   return fetcher.fetch(parsedUrl.data, {
-    format: parsedFormat.data,
+    formats: parsedFormats?.data,
+    schema,
     maxCharacters: parsedMax?.data,
     only: requested?.filter(isFetcherId),
   });
@@ -188,23 +202,34 @@ async function serveMcp() {
     {
       title: "Fetch a page",
       description:
-        "Fetch a web page and return its main content as markdown (default) or HTML. " +
-        "Returns JSON: { success, provider, attempts, data: { url, title, format, content, truncated, publishedAt? } }. " +
+        "Fetch a web page and return one or more representations: markdown, cleaned HTML, raw HTML, links, or schema-shaped JSON. " +
+        "Returns JSON: { success, data: { url, title, format, content, metadata, rawHtml?, links?, json?, truncated } }. " +
         "Tries a local fetch first, then remote readers, and uses keyed readers only when free ones can't answer.",
       inputSchema: {
         url: pageUrl.describe("The http or https page to fetch."),
-        format: formatSchema.optional().describe("markdown (default) or html."),
+        format: fetchFormatSchema.optional().describe("One format; markdown is the default."),
+        formats: fetchFormatsSchema.optional().describe("One or more output formats."),
+        schema: extractionSchema.optional().describe("JSON Schema-like object used when formats includes json."),
         maxCharacters: maxCharactersSchema.optional().describe("Cut the content at this many characters (default 50000)."),
         providers: z.array(z.string()).optional().describe("Only use these fetcher IDs."),
       },
     },
-    async ({ url, format, maxCharacters, providers: requested }) => {
+    async ({ url, format, formats, schema, maxCharacters, providers: requested }) => {
+      if (format && formats) {
+        const result: FetchResult = { success: false, error: "Pass format or formats, not both." };
+        return { content: [{ type: "text", text: JSON.stringify(result) }], isError: true };
+      }
       const unknown = requested?.filter((id) => !isFetcherId(id));
       if (unknown?.length) {
         const result: FetchResult = { success: false, error: `Unknown fetcher(s): ${unknown.join(", ")}.` };
         return { content: [{ type: "text", text: JSON.stringify(result) }], isError: true };
       }
-      const result = await fetcher.fetch(url, { format, maxCharacters, only: requested?.filter(isFetcherId) });
+      const result = await fetcher.fetch(url, {
+        formats: formats ?? (format ? [format] : undefined),
+        schema,
+        maxCharacters,
+        only: requested?.filter(isFetcherId),
+      });
       return { content: [{ type: "text", text: JSON.stringify(result) }], isError: !result.success };
     },
   );
@@ -268,8 +293,10 @@ const USAGE = `webmesh search <query>     search the web (JSON)
       --safe-search <strict|moderate|off>
       --exact-match
       --search-depth <fast|deep>
-webmesh fetch <url>        fetch a page as markdown or HTML (JSON)
-      --format <markdown|html>
+webmesh fetch <url>        fetch one or more page representations (JSON)
+      --format <markdown|html|rawHtml|links|json>
+                              comma-separate formats, default: markdown
+      --schema-file <path>  JSON schema for the json format
       --max-characters <n>   cut content at n characters (default 50000)
   -p, --providers <a,b>      only use these fetchers
 webmesh browser <command>    drive Chrome with agent-browser, e.g. open <url>, snapshot -i, click @e2
@@ -340,6 +367,7 @@ const { values, positionals } = parseArgs({
     "exact-match": { type: "boolean" },
     "search-depth": { type: "string" },
     format: { type: "string" },
+    "schema-file": { type: "string" },
     "max-characters": { type: "string" },
     agent: { type: "string", short: "a" },
     remove: { type: "boolean" },
@@ -373,7 +401,8 @@ if (command === "search" && !values.help) {
   if (!result.success) process.exitCode = 1;
 } else if (command === "fetch" && !values.help) {
   const result = await runFetch(rest[0], {
-    format: values.format,
+    formats: values.format,
+    schemaFile: values["schema-file"],
     maxCharacters: values["max-characters"],
     only: values.providers,
   });

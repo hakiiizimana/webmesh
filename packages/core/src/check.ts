@@ -73,6 +73,7 @@ async function probeFetcher(
   return probe("fetch", id, async (signal) => {
     const page = await fetcher.fetch(PAGE, {
       format: "markdown",
+      formats: ["markdown"],
       maxCharacters: 50_000,
       signal,
       key,

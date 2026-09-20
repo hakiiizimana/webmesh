@@ -3,6 +3,7 @@ import { request } from "../../http";
 import { blockedUrl } from "../../network";
 import { TargetError } from "../../router";
 import type { FetchedPage, FetchContext } from "../types";
+import { linksFromHtml } from "./links";
 import { MIN_WORDS, assertReadable, normalizePage, pageFromHtml } from "./page";
 
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
@@ -27,7 +28,7 @@ const isPdf = (type: string, target: string) =>
 
 export async function fetchDirect(
   url: string,
-  { format, signal, proxy, allowPrivateNetworks, resolve }: FetchContext,
+  { format, formats, signal, proxy, allowPrivateNetworks, resolve }: FetchContext,
 ): Promise<FetchedPage> {
   let target = url;
   let res;
@@ -49,13 +50,25 @@ export async function fetchDirect(
     target = new URL(location, target).href;
   }
   const type = (res.headers.get("content-type") ?? "").toLowerCase();
-  if (isPdf(type, target)) return pageFromPdf(await res.bytes(), target);
+  const metadata = {
+    statusCode: res.status,
+    contentType: type || undefined,
+    language: res.headers.get("content-language") ?? undefined,
+  };
+  if (isPdf(type, target)) return { ...(await pageFromPdf(await res.bytes(), target)), metadata };
   const body = await res.text();
   if (type.includes("markdown")) {
-    return normalizePage({ url: target, title: markdownTitle(body) || target, content: body }, format);
+    return normalizePage({ url: target, title: markdownTitle(body) || target, content: body, metadata }, format);
   }
   assertReadable(body);
-  if (type.includes("html")) return pageFromHtml(body, target, format);
-  if (type.startsWith("text/") || type.includes("json")) return { url: target, title: target, content: body };
+  if (type.includes("html")) {
+    return {
+      ...(await pageFromHtml(body, target, format)),
+      metadata,
+      rawHtml: formats.includes("rawHtml") ? body : undefined,
+      links: formats.includes("links") ? linksFromHtml(body, target) : undefined,
+    };
+  }
+  if (type.startsWith("text/") || type.includes("json")) return { url: target, title: target, content: body, metadata };
   throw new Error(`can't read ${type || "this content type"} locally`);
 }

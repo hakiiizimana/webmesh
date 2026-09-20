@@ -7,7 +7,9 @@ export {
   isFetcherId,
   type FetcherId,
   type FetchResult,
+  type FetchFormat,
   type Page,
+  type PageMetadata,
   type PageFormat,
 } from "./fetch";
 export { memoryCache, memoryStore, openStore, type CacheStore, type StateStore } from "./state";
