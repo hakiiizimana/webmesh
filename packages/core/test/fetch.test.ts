@@ -11,6 +11,7 @@ import {
   pageFromMarkdownNew,
   pageFromParallel,
   pageFromTinyfish,
+  pageFromZenRows,
 } from "../src/fetch";
 import { HttpError } from "../src/http";
 import { TargetError } from "../src/router";
@@ -677,4 +678,21 @@ test("normalizes published date formats and rejects invalid dates in pageFromHtm
   </head><body><article><p>${"Blog content sentence here. ".repeat(25)}</p></article></body></html>`;
   const result = await pageFromHtml(htmlWithDate, "https://blog.example/post", "markdown");
   expect(result.publishedAt).toBe("2026-05-10");
+});
+
+// ZenRows answers with the converted page as the body, and reports redirects in a header.
+test("reads a ZenRows markdown body and prefers the final url header", () => {
+  const body = "\n# Example Domain\n\nThis domain is for use in documentation examples.\n";
+
+  expect(pageFromZenRows(body, "https://example.com/", "https://www.example.com/")).toEqual({
+    url: "https://www.example.com/",
+    title: "Example Domain",
+    content: "# Example Domain\n\nThis domain is for use in documentation examples.",
+  });
+  expect(pageFromZenRows(body, "https://example.com/"))
+    .toMatchObject({ url: "https://example.com/", title: "Example Domain" });
+});
+
+test("registers ZenRows as a keyed markdown-only fetcher", () => {
+  expect(fetchers.zenrows).toMatchObject({ kind: "api", env: "ZENROWS_API_KEY", formats: ["markdown"] });
 });

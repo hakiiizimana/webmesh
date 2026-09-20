@@ -48,6 +48,8 @@ export type SearchContext = {
 export type Provider = {
   kind: import("../shared/provider-kind").ProviderKind;
   env?: string;
+  // Excluded from the default provider pool. Only runs when a caller names it.
+  manual?: boolean;
   supports?: (filters: SearchFilters) => boolean;
   search: (query: string, ctx: SearchContext) => Promise<SearchItem[]>;
 };
@@ -56,45 +58,44 @@ export type FilterSupport = (filters: SearchFilters) => boolean;
 
 export type Parse = (query: string, body: string) => SearchItem[] | Promise<SearchItem[]>;
 
-export type Mcp = {
+// Registry-level concerns, shared by every provider shape: `manual` keeps a provider out of the
+// default pool, and `supports` declares the filters it is willing to honor.
+type Registry = { manual?: boolean; supports?: FilterSupport };
+
+export type Mcp = Registry & {
   kind: "mcp";
   url: string;
   tool: string;
   parse: Parse;
   preferStructured?: boolean;
   args: (query: string, limit: number, filters: SearchFilters) => Json;
-  supports?: FilterSupport;
 };
 
-export type Get = {
+export type Get = Registry & {
   method: "GET";
   url: (query: string, limit: number, filters: SearchFilters) => string;
   parse: Parse;
   headers?: (key: string) => Record<string, string>;
-  supports?: FilterSupport;
 } & ({ kind: "api"; env: string } | { kind: "public" });
 
-export type Post = {
+export type Post = Registry & {
   method: "POST";
   url: (query: string, limit: number, filters: SearchFilters) => string;
   parse: Parse;
   headers?: (key: string) => Record<string, string>;
   body: (query: string, limit: number, filters: SearchFilters) => Json;
-  supports?: FilterSupport;
 } & ({ kind: "api"; env: string } | { kind: "public" });
 
-export type Scrape = {
+export type Scrape = Registry & {
   kind: "scrape";
   url: (query: string, filters: SearchFilters) => string;
   parse: Parse;
   headers?: Record<string, string>;
-  supports?: FilterSupport;
 };
 
-export type Custom = {
+export type Custom = Registry & {
   kind: "public" | "scrape";
   search: Provider["search"];
-  supports?: FilterSupport;
 };
 
 export type ProviderSpec = Mcp | Get | Post | Scrape | Custom;

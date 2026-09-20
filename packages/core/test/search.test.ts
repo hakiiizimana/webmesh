@@ -286,3 +286,18 @@ describe("search fusion", () => {
     expect(seen).toEqual({ scrape: "http://proxy:8000", public: undefined });
   });
 });
+
+test("keeps manual providers out of the default pool until a caller names them", async () => {
+  const live = fake([item("https://live.example/result")]);
+  const vertical = Object.assign(fake([item("https://vertical.example/result")]), { manual: true });
+  const { search } = setup({ live, vertical });
+
+  const automatic = await search("query");
+  expect(automatic.success).toBe(true);
+  if (automatic.success) expect(automatic.data.map((entry) => entry.url)).toEqual(["https://live.example/result"]);
+  expect(vertical.calls).toHaveLength(0);
+
+  const named = await search("query", { only: ["vertical"] });
+  expect(named.success).toBe(true);
+  if (named.success) expect(named.data.map((entry) => entry.url)).toEqual(["https://vertical.example/result"]);
+});
