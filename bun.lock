@@ -13,8 +13,8 @@
       },
     },
     "apps/cli": {
-      "name": "@webmesh/cli",
-      "version": "0.1.0",
+      "name": "@hakiiizimana/webmesh",
+      "version": "0.0.1",
       "bin": {
         "webmesh": "dist/webmesh.js",
       },
@@ -54,6 +54,8 @@
     "zod": "^4.6.5",
   },
   "packages": {
+    "@hakiiizimana/webmesh": ["@hakiiizimana/webmesh@workspace:apps/cli"],
+
     "@hono/node-server": ["@hono/node-server@2.1.1", "", { "peerDependencies": { "hono": "^4" } }, "sha512-ELuehkj5VCBdgEw9zs+ivkKwyzzUCSQuE96YmiPvn1ECBoZCczbFXJLeEGMTYjphP6gydh4pHMqEYPVMYUVgQg=="],
 
     "@mixmark-io/domino": ["@mixmark-io/domino@2.2.0", "", {}, "sha512-Y28PR25bHXUg88kCV7nivXrP2Nj2RueZ3/l/jdx6J9f8J4nsEGcgX0Qe6lt7Pa+J79+kPiJU3LguR6O/6zrLOw=="],
@@ -115,8 +117,6 @@
     "@types/bun": ["@types/bun@1.4.2", "", { "dependencies": { "bun-types": "1.4.2" } }, "sha512-GimotNn7+ZV0uVArItBbriZsR1oNf0+WTzPkdcFrzShI7k2norL0uzEaJT8T33dWr7O/c9ZDuAFQrctKCi72oQ=="],
 
     "@types/node": ["@types/node@26.6.1", "", { "dependencies": { "undici-types": "~8.9.0" } }, "sha512-VqGJBMCtdhqkBUCcBLvywI0NJ+KLuVzgNnlBUNFOQjqVxzo2lxLUNg1DSey8+u2u6ktswSAxg+s68QLzWHNOuA=="],
-
-    "@webmesh/cli": ["@webmesh/cli@workspace:apps/cli"],
 
     "@webmesh/core": ["@webmesh/core@workspace:packages/core"],
 
