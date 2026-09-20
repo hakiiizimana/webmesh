@@ -14,7 +14,6 @@
   },
   "files": [
     "dist",
-    "scripts",
     "THIRD_PARTY_NOTICES.txt"
   ],
   "engines": {
@@ -27,7 +26,6 @@
     "build": "bun build src/index.ts --target bun --outfile dist/webmesh.js --external wreq-js && mkdir -p dist/skills dist/bin && cp -R ../../skills/* dist/skills/ && cp -R ../../packages/core/bin/. dist/bin/ && cp ../../README.md ../../LICENSE .",
     "check-types": "tsc --noEmit",
     "test": "bun test",
-    "postinstall": "node scripts/install-browser.mjs",
     "prepack": "bun run --cwd ../.. build:binaries && bun run build"
   },
   "dependencies": {

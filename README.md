@@ -14,7 +14,13 @@ npm install -g webmesh.js
 
 `bun add -g webmesh.js` works too.
 
-The installer uses Chrome or Chromium already on your machine. If neither is installed, it downloads Chromium for browser commands.
+The first `browser` command uses the Chrome or Chromium already on your machine. If neither is installed, it downloads Chromium once, on first use.
+
+npm 12 blocks dependency install scripts by default, so it warns about `agent-browser`. Webmesh does not need that script — Chromium is downloaded on first use either way. To silence the warning:
+
+```sh
+npm install -g --allow-scripts=agent-browser webmesh.js
+```
 
 ## Use it from the terminal
 
