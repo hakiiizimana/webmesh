@@ -61,11 +61,23 @@ function tavilyBody(query: string, limit: number, filters: SearchFilters): Json 
   return body;
 }
 
+const tavilyUrl = () => "https://api.tavily.com/search";
+
+export const tavilyKeyless = {
+  kind: "public",
+  method: "POST",
+  url: tavilyUrl,
+  parse: parseTavily,
+  headers: () => ({ "x-tavily-access-mode": "keyless" }),
+  body: tavilyBody,
+  supports: tavilySupports,
+} satisfies Post;
+
 export const tavily = {
   kind: "api",
   env: "TAVILY_API_KEY",
   method: "POST",
-  url: () => "https://api.tavily.com/search",
+  url: tavilyUrl,
   parse: parseTavily,
   headers: (key) => ({ authorization: `Bearer ${key}` }),
   body: tavilyBody,

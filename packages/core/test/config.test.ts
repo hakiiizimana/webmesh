@@ -2,6 +2,11 @@ import { expect, test } from "bun:test";
 import { providers } from "../src/config";
 import type { SearchFilters } from "../src/types";
 
+test("builds keyless Tavily requests", () => {
+  expect(providers["tavily-keyless"].headers?.())
+    .toEqual({ "x-tavily-access-mode": "keyless" });
+});
+
 test("builds Tavily filters", () => {
   const body = providers.tavily.body("rust ownership", 8, {
     freshness: { from: "2026-01-01", to: "2026-01-31" },
@@ -29,6 +34,91 @@ test("builds Tavily filters", () => {
     exact_match: true,
     search_depth: "advanced",
   });
+});
+
+test("builds SearchX filters", () => {
+  const url = new URL(
+    providers.searchx.url("rust ownership", 80, {
+      freshness: { from: "2026-01-01", to: "2026-01-31" },
+      includeDomains: ["rust-lang.org"],
+      excludeDomains: ["reddit.com"],
+      type: "news",
+      country: "SI",
+      language: "sl",
+      safeSearch: "strict",
+      exactMatch: true,
+    }),
+  );
+
+  expect(url.pathname).toBe("/api/v1/search");
+  expect(url.searchParams.get("per_page")).toBe("50");
+  expect(url.searchParams.get("mode")).toBe("hybrid");
+  expect(url.searchParams.get("freshness")).toBe("2026-01-01..2026-01-31");
+  expect(url.searchParams.get("country")).toBe("SI");
+  expect(url.searchParams.get("lang")).toBe("sl");
+  expect(url.searchParams.get("safe_search")).toBe("true");
+  expect(url.searchParams.get("category")).toBe("news");
+  expect(url.searchParams.get("q")).toContain('"rust ownership"');
+  expect(url.searchParams.get("q")).toContain("site:rust-lang.org");
+  expect(url.searchParams.get("q")).toContain("-site:reddit.com");
+});
+
+test("builds HN Algolia filters", () => {
+  const url = new URL(
+    providers["hn-algolia"].url("rust ownership", 80, {
+      freshness: { from: "2026-01-01", to: "2026-01-31" },
+      exactMatch: true,
+    }),
+  );
+
+  expect(url.searchParams.get("tags")).toBe("story");
+  expect(url.searchParams.get("hitsPerPage")).toBe("50");
+  expect(url.searchParams.get("query")).toBe('"rust ownership"');
+  expect(url.searchParams.get("numericFilters")).toBe("created_at_i>1767225600,created_at_i<1769903999");
+});
+
+test("builds Stack Exchange filters", () => {
+  const url = new URL(
+    providers.stackexchange.url("rust ownership", 200, {
+      freshness: { from: "2026-01-01", to: "2026-01-31" },
+    }),
+  );
+
+  expect(url.searchParams.get("site")).toBe("stackoverflow");
+  expect(url.searchParams.get("q")).toBe("rust ownership");
+  expect(url.searchParams.get("pagesize")).toBe("100");
+  expect(url.searchParams.get("filter")).toBe("withbody");
+  expect(url.searchParams.get("fromdate")).toBe("1767225600");
+  expect(url.searchParams.get("todate")).toBe("1769903999");
+});
+
+test("builds OpenAlex filters", () => {
+  const url = new URL(
+    providers.openalex.url("rust ownership", 200, {
+      freshness: { from: "2026-01-01" },
+      language: "en",
+      exactMatch: true,
+    }),
+  );
+
+  expect(url.searchParams.get("search")).toBe('"rust ownership"');
+  expect(url.searchParams.get("per_page")).toBe("100");
+  expect(url.searchParams.get("select")).toContain("abstract_inverted_index");
+  expect(url.searchParams.get("filter")).toBe("from_publication_date:2026-01-01,language:en");
+});
+
+// Verticals answer any query, so they stay out of the default pool and decline filters they cannot pass through.
+test("keeps vertical search providers opt-in and honest about filters", () => {
+  for (const id of ["hn-algolia", "stackexchange", "openalex"] as const) {
+    expect(providers[id].manual).toBe(true);
+    expect(providers[id].supports?.({ type: "news" })).toBe(false);
+    expect(providers[id].supports?.({ type: "video" })).toBe(false);
+    expect(providers[id].supports?.({ includeDomains: ["rust-lang.org"] })).toBe(false);
+    expect(providers[id].supports?.({ type: "web" })).toBe(true);
+  }
+  expect(providers.openalex.supports?.({ language: "en" })).toBe(true);
+  expect(providers.stackexchange.supports?.({ language: "en" })).toBe(false);
+  expect(providers["hn-algolia"].supports?.({ freshness: "week" })).toBe(true);
 });
 
 test("builds Brave news filters", () => {
