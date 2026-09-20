@@ -97,12 +97,12 @@ export async function runHtmlToMarkdown(html: string, options: HtmlToMarkdownOpt
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return failure("unavailable", "timeoutMs must be greater than zero");
   if (!Number.isSafeInteger(maxOutputBytes) || maxOutputBytes <= 0) return failure("unavailable", "maxOutputBytes must be a positive integer");
   if (options.signal?.aborted) return failure("cancelled", "html-to-markdown was cancelled");
-  const executablePath = options.executablePath ?? htmlToMarkdownPath();
-  if (!executablePath) return failure("unavailable", "html-to-markdown binary is not installed");
   const input = encoder.encode(html);
   if (input.byteLength > maxInputBytes) {
     return failure("input-limit", `html-to-markdown input exceeded ${maxInputBytes} bytes`);
   }
+  const executablePath = options.executablePath ?? htmlToMarkdownPath();
+  if (!executablePath) return failure("unavailable", "html-to-markdown binary is not installed");
 
   let child: Bun.Subprocess;
   try {
