@@ -9,10 +9,10 @@ Run Webmesh from the terminal, or add it to your coding agent. It runs locally a
 Webmesh needs [Bun](https://bun.sh) 1.4.1 or newer.
 
 ```sh
-npm install -g @hakiizimana/webmesh
+npm install -g webmesh.js
 ```
 
-`bun add -g @hakiizimana/webmesh` works too.
+`bun add -g webmesh.js` works too.
 
 The installer uses Chrome or Chromium already on your machine. If neither is installed, it downloads Chromium for browser commands.
 

@@ -265,7 +265,7 @@ export function ensureBrowser(bin: string): Promise<string | undefined> {
 function hint(error: string): string {
   if (/unknown ref/i.test(error)) return `${error}. Refs change when the page changes; run snapshot -i again.`;
   if (/failed to launch chrome|chrome not found|no chrome/i.test(error)) {
-    return `${error}. The Chromium installed with webmesh could not start; reinstall @hakiizimana/webmesh.`;
+    return `${error}. The Chromium installed with webmesh could not start; reinstall webmesh.js.`;
   }
   return error;
 }

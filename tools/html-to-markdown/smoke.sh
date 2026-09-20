@@ -9,7 +9,7 @@ if ! compgen -G "packages/core/bin/html-to-markdown-*" >/dev/null; then
 fi
 
 (cd apps/cli && bun run build >/dev/null)
-tgz="$(cd apps/cli && rm -f webmesh-cli-*.tgz && bun pm pack >/dev/null && ls webmesh-cli-*.tgz | head -1)"
+tgz="$(cd apps/cli && rm -f webmesh.js-*.tgz && bun pm pack >/dev/null && ls webmesh.js-*.tgz | head -1)"
 
 smoke="$(mktemp -d)"
 trap 'rm -rf "$smoke"' EXIT
