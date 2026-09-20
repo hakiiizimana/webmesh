@@ -3,6 +3,10 @@
   "version": "0.0.1",
   "description": "Search, fetch, and browse the web from your AI agent.",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hakiiizimana/webmesh.git"
+  },
   "type": "module",
   "keywords": ["mcp", "web-search", "web-fetch", "browser", "ai-agents"],
   "bin": {
