@@ -14,7 +14,7 @@ npm install -g webmesh.js
 
 `bun add -g webmesh.js` works too.
 
-The first `browser` command uses the Chrome or Chromium already on your machine. If neither is installed, it downloads Chromium once, on first use.
+The first `agent-browser` command uses the Chrome or Chromium already on your machine. If neither is installed, it downloads Chromium once, on first use.
 
 npm 12 blocks dependency install scripts by default, so it warns about `agent-browser`. Webmesh does not need that script — Chromium is downloaded on first use either way. To silence the warning:
 
@@ -27,12 +27,12 @@ npm install -g --allow-scripts=agent-browser webmesh.js
 ```sh
 webmesh search "sqlite wal mode"
 webmesh fetch https://sqlite.org/wal.html
-webmesh browser open https://example.com
+webmesh agent-browser open https://example.com
 ```
 
-`search` finds sources. `fetch` reads a URL and returns page content. `browser` opens a real browser for pages that need clicks, JavaScript, downloads, or a login.
+`search` finds sources. `fetch` reads a URL and returns page content. `agent-browser` opens a real browser for pages that need clicks, JavaScript, downloads, or a login.
 
-Run `webmesh --help` for every command. Run `webmesh browser --help` for browser commands.
+Run `webmesh --help` for every command. Run `webmesh agent-browser --help` for browser commands.
 
 ## Use it with your agent
 
@@ -50,6 +50,8 @@ To add Webmesh yourself, point your agent's MCP configuration at:
 command = "webmesh"
 args = ["mcp"]
 ```
+
+The MCP server exposes `web_search`, `web_fetch`, and `agent-browser`.
 
 ## Add an API key
 

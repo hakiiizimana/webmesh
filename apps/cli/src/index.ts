@@ -245,16 +245,16 @@ async function serveMcp() {
   });
   if (agentBrowserPath()) {
     server.registerTool(
-      "browser",
+      "agent-browser",
       {
-        title: "Browser",
+        title: "Agent browser",
         description:
           "Drive a real Chrome browser: open pages, click, type, read, and take screenshots. Pass one browser command as args. " +
           'Loop: ["open", url], then ["snapshot", "-i"] to list interactive elements as @e1, @e2, then ["click", "@e2"], ' +
           '["fill", "@e3", "text"], or ["press", "Enter"]. Run ["snapshot", "-i"] again after the page changes; refs go stale. ' +
           '["screenshot", "--annotate"] labels elements with their refs; add "--if-changed" to skip unchanged images. ' +
           '["read"] returns the rendered page as text. Also ["get", "text", "@e1"], ["select", "@e4", "value"], ["upload", "@e5", "/path"], ' +
-          '["scroll", "down"], ["tab", "list"], ["back"]. Run `webmesh browser --help` for the command list. ' +
+          '["scroll", "down"], ["tab", "list"], ["back"]. Run `webmesh agent-browser --help` for the command list. ' +
           "Use absolute paths for pdf, upload, and --screenshot-dir; relative paths resolve from the browser's background process. " +
           "Sessions start with the logins saved by `webmesh login`. Secrets in output are redacted. " +
           "The session belongs to this server and closes when it exits. Returns JSON: { success, data } or { success, error }.",
