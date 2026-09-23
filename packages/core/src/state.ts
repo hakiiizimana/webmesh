@@ -2,7 +2,7 @@ import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { successfulSearch, type SuccessfulSearch } from "./types";
+import type { ZodType } from "zod";
 
 export type ProviderHealth = { success: number; latencyMs: number };
 export type RoutingState = { benched: Record<string, number>; health: Record<string, ProviderHealth> };
@@ -14,8 +14,8 @@ export type StateStore = {
 };
 
 export type CacheStore = {
-  read: (key: string, now: number) => SuccessfulSearch | undefined;
-  write: (key: string, result: SuccessfulSearch, expiresAt: number) => void;
+  read: <T>(key: string, schema: ZodType<T>, now: number) => T | undefined;
+  write: <T>(key: string, result: T, expiresAt: number) => void;
 };
 
 const HEALTH_ALPHA = 0.3;
@@ -35,11 +35,6 @@ function nextHealth(current: ProviderHealth | undefined, sample: Partial<Provide
 const defaultPath = () => join(process.env.XDG_CACHE_HOME ?? join(homedir(), ".cache"), "webmesh", "webmesh.db");
 
 type ProviderRow = { id: string; benched_until: number; success: number | null; latency_ms: number | null };
-
-function cleanResult<T>(value: T): SuccessfulSearch | undefined {
-  const parsed = successfulSearch.safeParse(value);
-  return parsed.success ? parsed.data : undefined;
-}
 
 export function openStore(path = defaultPath()): StateStore & CacheStore {
   if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
@@ -104,12 +99,12 @@ export function openStore(path = defaultPath()): StateStore & CacheStore {
     },
     observe: (id, sample) => observe.immediate(id, sample),
     bench: (id, until) => saveBench.run(id, until),
-    read(key, now) {
+    read(key, schema, now) {
       const row = readCache.get(key);
       if (!row || row.expires_at <= now) return undefined;
       try {
-        const result = cleanResult(JSON.parse(row.result));
-        if (result) return result;
+        const parsed = schema.safeParse(JSON.parse(row.result));
+        if (parsed.success) return parsed.data;
       } catch {
         deleteCache.run(key);
         return undefined;
@@ -118,9 +113,7 @@ export function openStore(path = defaultPath()): StateStore & CacheStore {
       return undefined;
     },
     write(key, result, expiresAt) {
-      const cleaned = cleanResult(result);
-      if (!cleaned) return;
-      writeCache.run(key, JSON.stringify(cleaned), expiresAt);
+      writeCache.run(key, JSON.stringify(result), expiresAt);
       pruneCache.run(DISK_CACHE_MAX_ENTRIES);
     },
   };
@@ -140,21 +133,20 @@ export function memoryStore(): StateStore {
 }
 
 export function memoryCache(maxEntries = 128): CacheStore {
-  const entries = new Map<string, { result: SuccessfulSearch; expiresAt: number }>();
+  const entries = new Map<string, { result: unknown; expiresAt: number }>();
   return {
-    read(key, now) {
+    read(key, schema, now) {
       const entry = entries.get(key);
       if (!entry) return undefined;
       entries.delete(key);
       if (entry.expiresAt <= now) return undefined;
       entries.set(key, entry);
-      return structuredClone(entry.result);
+      const parsed = schema.safeParse(structuredClone(entry.result));
+      return parsed.success ? parsed.data : undefined;
     },
     write(key, result, expiresAt) {
-      const cleaned = cleanResult(result);
-      if (!cleaned) return;
       entries.delete(key);
-      entries.set(key, { result: structuredClone(cleaned), expiresAt });
+      entries.set(key, { result: structuredClone(result), expiresAt });
       while (entries.size > maxEntries) {
         const oldest = entries.keys().next().value;
         if (oldest === undefined) break;

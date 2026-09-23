@@ -6,7 +6,9 @@ import type { FetchedPage, PageFormat } from "../types";
 import { cleanHtml } from "./cleanHtml";
 import { convertHtmlToMarkdown } from "./htmlToMarkdown";
 
-export const MIN_WORDS = 25;
+export const MIN_WORDS = 5;
+const JS_SHELL_WORDS = 50;
+const JS_SHELL = /enable javascript|requires javascript|javascript is (?:required|disabled)|turn on javascript/i;
 const BLOCK_PAGE =
   /just a moment|attention required|checking your browser before|verify you are human|enable javascript and cookies|unusual traffic from your|cf-browser-verification|ddos protection by cloudflare|please complete the security check|you have been blocked/i;
 const PUBLISHED_META = /(?:article:published_time|datePublished|og:published_time|article:modified_time|dateModified)/i;
@@ -33,6 +35,11 @@ function wordCount(text: string): number {
   return clean(text).split(/\s+/).filter(Boolean).length;
 }
 
+function needsJavaScript(text: string): boolean {
+  const words = wordCount(text);
+  return words < MIN_WORDS || (words < JS_SHELL_WORDS && JS_SHELL.test(text));
+}
+
 function titleFromHtml(html: string, fallback: string): string {
   return clean(html.match(/<title[^>]*>([^<]*)<\/title>/i)?.[1] ?? "") || fallback;
 }
@@ -50,11 +57,13 @@ function publishedFromHtml(html: string): string | undefined {
 export async function pageFromHtml(html: string, url: string, format: PageFormat): Promise<FetchedPage> {
   if (format === "html") {
     const content = await cleanHtml(html, url);
-    if (wordCount(content) < MIN_WORDS) throw new Error("too little content, the page may need JavaScript");
+    if (needsJavaScript(content)) throw new Error("too little content, the page may need JavaScript");
     return { url, title: titleFromHtml(html, url), content, publishedAt: publishedFromHtml(html) };
   }
   const page = await Defuddle(html, url, { markdown: false, separateMarkdown: true });
-  if ((page.wordCount ?? 0) < MIN_WORDS) throw new Error("too little content, the page may need JavaScript");
+  if ((page.wordCount ?? 0) < MIN_WORDS || needsJavaScript(page.content)) {
+    throw new Error("too little content, the page may need JavaScript");
+  }
   const content = await convertHtmlToMarkdown(page.content, page.contentMarkdown ?? "");
   return { url, title: titleFromHtml(html, page.title || url), content, publishedAt: publishedDate(page.published) };
 }

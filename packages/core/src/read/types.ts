@@ -1,26 +1,47 @@
+import { z } from "zod";
 import type { Json } from "../http";
 import type { ResolveAddresses } from "../network";
 import type { ProviderKind } from "../shared/provider-kind";
-import type { YtDlpMetadata } from "./providers/ytDlp";
+import { ytDlpMetadata, type YtDlpMetadata } from "./providers/ytDlp";
 
-export const fetchFormats = ["markdown", "html", "rawHtml", "links", "json"] as const;
-export type FetchFormat = (typeof fetchFormats)[number];
-export type PageFormat = Extract<FetchFormat, "markdown" | "html">;
+export const fetchFormat = z.enum(["markdown", "html", "rawHtml", "links", "json"]);
+export type FetchFormat = z.infer<typeof fetchFormat>;
+export const pageFormat = fetchFormat.extract(["markdown", "html"]);
+export type PageFormat = z.infer<typeof pageFormat>;
 
-export type PageMetadata = {
-  sourceURL: string;
-  url: string;
-  title: string;
-  fetchedAt: string;
-  contentHash: string;
-  publishedAt?: string;
-  language?: string;
-  statusCode?: number;
-  contentType?: string;
-  scrapeId?: string;
-  cachedAt?: string;
-  cacheState?: string;
-};
+const pageMetadata = z.object({
+  sourceURL: z.string(),
+  url: z.string(),
+  title: z.string(),
+  fetchedAt: z.string(),
+  contentHash: z.string(),
+  publishedAt: z.string().optional(),
+  language: z.string().optional(),
+  statusCode: z.number().optional(),
+  contentType: z.string().optional(),
+  scrapeId: z.string().optional(),
+  cachedAt: z.string().optional(),
+  cacheState: z.string().optional(),
+});
+
+export type PageMetadata = z.infer<typeof pageMetadata>;
+
+// What a fetch returns. The cache and the MCP output schema check against this same shape.
+export const page = z.object({
+  url: z.string(),
+  title: z.string(),
+  content: z.string(),
+  format: pageFormat,
+  truncated: z.boolean(),
+  metadata: pageMetadata,
+  publishedAt: z.string().optional(),
+  rawHtml: z.string().optional(),
+  links: z.array(z.string()).optional(),
+  json: z.json().optional(),
+  media: ytDlpMetadata.optional(),
+});
+
+export type Page = z.infer<typeof page>;
 
 export type FetchedPage = {
   url: string;
@@ -43,6 +64,7 @@ export type FetchContext = {
   key: string;
   proxy?: string;
   allowPrivateNetworks?: boolean;
+  allowPrivateHosts?: readonly string[];
   resolve?: ResolveAddresses;
 };
 
@@ -56,7 +78,5 @@ export type Fetcher = {
   formats: readonly FetchFormat[];
   fetch: (url: string, context: FetchContext) => Promise<FetchedPage>;
 };
-
-export type Page = Omit<FetchedPage, "metadata"> & { format: PageFormat; truncated: boolean; metadata: PageMetadata };
 
 export type FetchResult = { success: true; data: Page } | { success: false; error: string };

@@ -16,13 +16,13 @@ const removeFake = async (path: string): Promise<void> => {
   await rm(join(path, ".."), { recursive: true, force: true });
 };
 
-test("extracts metadata with bounded yt-dlp arguments", async () => {
+test("extracts metadata with bounded yt-dlp arguments and keeps the proxy off the command line", async () => {
   const executablePath = await makeFake(`
 const args = process.argv.slice(2);
 console.log(JSON.stringify({
   id: "demo",
   title: "Demo",
-  description: JSON.stringify(args),
+  description: JSON.stringify([...args, process.env.https_proxy]),
   duration: 12.5,
   uploader: "Channel",
   upload_date: "20240102",
@@ -60,9 +60,8 @@ console.log(JSON.stringify({
         "--no-playlist",
         "--retries",
         "3",
-        "--proxy",
-        "http://proxy.test:8080",
         "https://example.test/video",
+        "http://proxy.test:8080",
       ]),
       url: "https://example.test/video",
       durationSeconds: 12.5,

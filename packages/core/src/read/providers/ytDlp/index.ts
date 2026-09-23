@@ -1,3 +1,4 @@
+import { z } from "zod";
 import type { ResolveAddresses } from "../../../network";
 import { transcriptFrom } from "./captions";
 import { isObject, metadataFrom } from "./parse";
@@ -5,42 +6,43 @@ import { DEFAULT_MAX_OUTPUT_BYTES, DEFAULT_TIMEOUT_MS, defaultYtDlpPath, failure
 
 const DEFAULT_CACHE_TTL_MS = 3_600_000;
 
-export type YtDlpCaptionTrack = {
-  readonly language: string;
-  readonly name: string | null;
-  readonly automatic: boolean;
-  readonly formats: readonly { readonly extension: string | null; readonly name: string | null; readonly protocol: string | null }[];
-};
+const nullableString = z.string().nullable();
+const nullableNumber = z.number().nullable();
 
-export type YtDlpMetadata = {
-  readonly id: string;
-  readonly site: string;
-  readonly extractor: string;
-  readonly mediaType: "video" | "audio" | "image" | "playlist" | "unknown";
-  readonly title: string;
-  readonly description: string;
-  readonly url: string;
-  readonly creator: string | null;
-  readonly creatorId: string | null;
-  readonly creatorUrl: string | null;
-  readonly publishedAt: string | null;
-  readonly durationSeconds: number | null;
-  readonly thumbnail: string | null;
-  readonly engagement: {
-    readonly views: number | null;
-    readonly likes: number | null;
-    readonly comments: number | null;
-    readonly reposts: number | null;
-  };
-  readonly tags: readonly string[];
-  readonly categories: readonly string[];
-  readonly chapters: readonly { readonly title: string; readonly startSeconds: number; readonly endSeconds: number | null }[];
-  readonly captions: readonly YtDlpCaptionTrack[];
-  readonly transcript: string | null;
-  readonly liveStatus: string | null;
-  readonly availability: string | null;
-  readonly ageLimit: number | null;
-};
+export const ytDlpCaptionTrack = z.object({
+  language: z.string(),
+  name: nullableString,
+  automatic: z.boolean(),
+  formats: z.array(z.object({ extension: nullableString, name: nullableString, protocol: nullableString })),
+});
+
+export const ytDlpMetadata = z.object({
+  id: z.string(),
+  site: z.string(),
+  extractor: z.string(),
+  mediaType: z.enum(["video", "audio", "image", "playlist", "unknown"]),
+  title: z.string(),
+  description: z.string(),
+  url: z.string(),
+  creator: nullableString,
+  creatorId: nullableString,
+  creatorUrl: nullableString,
+  publishedAt: nullableString,
+  durationSeconds: nullableNumber,
+  thumbnail: nullableString,
+  engagement: z.object({ views: nullableNumber, likes: nullableNumber, comments: nullableNumber, reposts: nullableNumber }),
+  tags: z.array(z.string()),
+  categories: z.array(z.string()),
+  chapters: z.array(z.object({ title: z.string(), startSeconds: z.number(), endSeconds: nullableNumber })),
+  captions: z.array(ytDlpCaptionTrack),
+  transcript: nullableString,
+  liveStatus: nullableString,
+  availability: nullableString,
+  ageLimit: nullableNumber,
+});
+
+export type YtDlpCaptionTrack = z.infer<typeof ytDlpCaptionTrack>;
+export type YtDlpMetadata = z.infer<typeof ytDlpMetadata>;
 
 export type YtDlpErrorKind = "cancelled" | "timeout" | "output-limit" | "spawn" | "exit" | "invalid-json" | "options";
 export type YtDlpError = { readonly kind: YtDlpErrorKind; readonly message: string; readonly exitCode?: number };

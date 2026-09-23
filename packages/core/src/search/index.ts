@@ -2,13 +2,17 @@ import { HttpError, request } from "../http";
 import { callMcp } from "../mcp";
 import { createRouter, type RouterOptions, type Task, usesProxy } from "../router";
 import { type CacheStore, memoryCache } from "../state";
-import type { Provider, SearchContext, SearchFilters, SearchItem, SearchResult, SuccessfulSearch } from "./types";
+import { mapLimit } from "../shared/concurrency";
+import type { Provider, SearchedOne, SearchContext, SearchFilters, SearchItem, SearchResult, SuccessfulSearch } from "./types";
 import { cacheKey, cacheTtl } from "./cache";
+import { successfulSearch } from "./types";
 import { specs, type ProviderId } from "./providers";
 import type { ProviderSpec } from "./types";
 
-const FUSION_WINDOW_MS = 1_500;
+// Free providers answer in 0.3-2s (`webmesh check`, 2026-09-23); 1.5s cut a third of them.
+const FUSION_WINDOW_MS = 2_500;
 const HEDGE_MS = 400;
+const BATCH_CONCURRENCY = 3;
 const RRF_K = 60;
 const MAX_PER_DOMAIN = 2;
 
@@ -47,6 +51,7 @@ function bind(spec: ProviderSpec): Provider {
   return {
     kind: spec.kind,
     env: spec.kind === "api" ? spec.env : undefined,
+    manual: spec.manual,
     supports: spec.supports,
     search: (query, ctx) => invoke(spec, query, ctx),
   };
@@ -62,6 +67,8 @@ export const providers = {
   "marginalia-public": bind(specs["marginalia-public"]),
   "duckduckgo-lite": bind(specs["duckduckgo-lite"]),
   "firecrawl-free": bind(specs["firecrawl-free"]),
+  searchx: bind(specs.searchx),
+  "tavily-keyless": bind(specs["tavily-keyless"]),
   exa: bind(specs.exa),
   parallel: bind(specs.parallel),
   tavily: bind(specs.tavily),
@@ -71,7 +78,12 @@ export const providers = {
   firecrawl: bind(specs.firecrawl),
   marginalia: bind(specs.marginalia),
   tinyfish: bind(specs.tinyfish),
+  "hn-algolia": bind(specs["hn-algolia"]),
+  stackexchange: bind(specs.stackexchange),
+  openalex: bind(specs.openalex),
 } satisfies { [K in ProviderId]: Provider };
+
+type SearchRequest<Id> = { limit?: number; only?: Id[]; filters?: SearchFilters; signal?: AbortSignal };
 
 type SearchOptions = RouterOptions & {
   cache?: CacheStore;
@@ -180,10 +192,10 @@ export function createSearch<R extends Record<string, Provider>>(registry: R, op
 
   async function search(
     query: string,
-    { limit = 10, only, filters: requested = {} }: { limit?: number; only?: Id[]; filters?: SearchFilters } = {},
+    { limit = 10, only, filters: requested = {}, signal }: SearchRequest<Id> = {},
   ): Promise<SearchResult> {
     const filters = withoutDefaults(requested);
-    const configured = (only ?? router.ids).filter(router.isReady);
+    const configured = (only ?? router.ids.filter((id) => !router.get(id).manual)).filter(router.isReady);
     const ready = configured.filter((id) => router.get(id).supports?.(filters) ?? true);
     if (ready.length === 0) {
       return {
@@ -193,7 +205,7 @@ export function createSearch<R extends Record<string, Provider>>(registry: R, op
     }
 
     const key = cacheKey(query, limit, only, filters);
-    const cached = cache.read(key, router.now());
+    const cached = cache.read(key, successfulSearch, router.now());
     if (cached) return cached;
 
     const task: Task<Id, SearchItem[]> = {
@@ -213,7 +225,7 @@ export function createSearch<R extends Record<string, Provider>>(registry: R, op
     };
 
     const collect = async (ids: Id[]) => {
-      const outcomes = await Promise.all(ids.map((id) => router.route([id], task)));
+      const outcomes = await Promise.all(ids.map((id) => router.route([id], task, signal)));
       const lists: SearchItem[][] = [];
       const failures: string[] = [];
       for (const outcome of outcomes) {
@@ -226,15 +238,14 @@ export function createSearch<R extends Record<string, Provider>>(registry: R, op
     const free = ready.filter((id) => !router.get(id).env);
     const keyed = ready.filter((id) => router.get(id).env);
 
-    const primary = await collect(free);
-    let lists = primary.lists;
-    let failures = primary.failures;
-    if (lists.length === 0 && keyed.length > 0) {
+    let answered = await collect(free);
+    if (answered.lists.length === 0 && keyed.length > 0 && !signal?.aborted) {
       const fallback = await collect(keyed);
-      lists = fallback.lists;
-      failures = [...failures, ...fallback.failures];
+      answered = { ...fallback, failures: [...answered.failures, ...fallback.failures] };
     }
+    if (signal?.aborted) return { success: false, error: "Cancelled." };
 
+    const { lists, failures } = answered;
     const data = diversify(fuse(lists), limit);
     if (data.length === 0) {
       return {
@@ -248,5 +259,9 @@ export function createSearch<R extends Record<string, Provider>>(registry: R, op
     return result;
   }
 
-  return { search, status: router.status };
+  async function searchMany(queries: readonly string[], options: SearchRequest<Id> = {}): Promise<SearchedOne[]> {
+    return mapLimit(queries, BATCH_CONCURRENCY, async (query) => ({ query, ...(await search(query, options)) }));
+  }
+
+  return { search, searchMany, status: router.status };
 }

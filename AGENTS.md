@@ -15,7 +15,7 @@ Search, read, and browse the web from a terminal or an agent.
 2. A key never reaches output. Keys arrive through `mergeEnv(settings.keys, process.env)`.
    `maskProxy` exists for the same reason. Check what a new failure path prints.
 3. Private network blocking is a boundary, not a default. `blockedUrl()` in `network.ts`.
-   `allowPrivateNetworks` is opt-in. Never skip it.
+   `allowPrivateHosts` (exact `host:port`) and `allowPrivateNetworks` are opt-in. Never skip it.
 4. The router already retries, hedges, benches, and cools down. A second retry loop
    double-counts failures and makes a flaky provider look worse than it is.
 

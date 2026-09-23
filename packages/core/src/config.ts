@@ -1,2 +1,2 @@
-export { specs as providers, isProviderId, type ProviderId } from "./search/providers";
+export { specs as providers, isProviderId, providerIds, type ProviderId } from "./search/providers";
 export type { ProviderSpec } from "./search/types";

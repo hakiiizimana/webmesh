@@ -18,6 +18,7 @@ export type RouterOptions = {
   budgetMs?: number;
   hedgeMs?: number;
   retryDelayMs?: number;
+  attemptMs?: number;
   now?: () => number;
   random?: () => number;
 };
@@ -83,6 +84,7 @@ export function createRouter<R extends Record<string, Routable>>(
   const budgetMs = options.budgetMs ?? defaults.budgetMs;
   const hedgeMs = options.hedgeMs ?? defaults.hedgeMs;
   const retryDelayMs = options.retryDelayMs ?? RETRY_DELAY_MS;
+  const attemptMs = options.attemptMs;
   const now = options.now ?? Date.now;
   const random = options.random ?? Math.random;
   const { store } = options;
@@ -111,8 +113,12 @@ export function createRouter<R extends Record<string, Routable>>(
 
   async function attempt<T>(id: Id, task: Task<Id, T>, signal: AbortSignal): Promise<Outcome<T>> {
     const startedAt = performance.now();
+    const onMachine = get(id).kind === "local" || get(id).kind === "browser";
+    const cap = onMachine ? undefined : attemptMs;
+    const deadline = cap === undefined ? undefined : AbortSignal.timeout(cap);
+    const run = deadline ? AbortSignal.any([signal, deadline]) : signal;
     try {
-      const value = await withRetry(() => task.call(id, keyFor(id), signal), retryDelayMs * (1 + random()), signal);
+      const value = await withRetry(() => task.call(id, keyFor(id), run), retryDelayMs * (1 + random()), run);
       if (signal.aborted) return { id, failure: "cancelled" };
       if (!task.accept(value)) {
         store.observe(stateKey(id), { success: 0 });
@@ -122,18 +128,23 @@ export function createRouter<R extends Record<string, Routable>>(
       return { id, value };
     } catch (err) {
       if (signal.aborted) return { id, failure: "cancelled" };
+      if (cap !== undefined && deadline?.aborted) {
+        store.observe(stateKey(id), { success: 0 });
+        store.bench(stateKey(id), now() + TRANSIENT_MS);
+        return { id, failure: `no answer within ${cap / 1000}s` };
+      }
       const failure = (err instanceof Error ? err.message : String(err)).split("\n")[0]?.slice(0, 120) ?? "";
       if (err instanceof TargetError) return { id, failure };
       store.observe(stateKey(id), { success: 0 });
       const ms = err instanceof HttpError ? httpCooldown(err) : err instanceof SoftBlockError ? BLOCKED_MS : TRANSIENT_MS;
-      // Errors on this machine come from the page, not the provider.
-      const onMachine = get(id).kind === "local" || get(id).kind === "browser";
       if (ms > 0 && !onMachine) store.bench(stateKey(id), now() + ms);
       return { id, failure };
     }
   }
 
-  async function route<T>(candidates: Id[], task: Task<Id, T>): Promise<Routed<T>> {
+  // `signal` is the caller giving up, such as an MCP client cancelling the tool call.
+  async function route<T>(candidates: Id[], task: Task<Id, T>, signal?: AbortSignal): Promise<Routed<T>> {
+    if (signal?.aborted) return { success: false, error: "Cancelled." };
     const state = store.load();
     const cooling = candidates.filter((id) => (state.benched[stateKey(id)] ?? 0) > now());
     const failures = cooling.map((id) => `${id}: cooling down`);
@@ -141,6 +152,8 @@ export function createRouter<R extends Record<string, Routable>>(
 
     const stop = new AbortController();
     const budget = setTimeout(() => stop.abort(), budgetMs);
+    const cancel = () => stop.abort();
+    signal?.addEventListener("abort", cancel, { once: true });
     const expired = new Promise<"expired">((resolve) =>
       stop.signal.addEventListener("abort", () => resolve("expired"), { once: true }),
     );
@@ -162,6 +175,7 @@ export function createRouter<R extends Record<string, Routable>>(
         ]);
         hedge.abort();
         if (next === "expired") {
+          if (signal?.aborted) return { success: false, error: "Cancelled." };
           failures.push(...[...running.keys()].map((id) => `${id}: timed out`));
           break;
         }
@@ -177,8 +191,11 @@ export function createRouter<R extends Record<string, Routable>>(
       return { success: false, error: `All providers failed. ${failures.join("; ")}` };
     } finally {
       clearTimeout(budget);
-      // Losers still count their elapsed time against their speed.
-      for (const [id, run] of running) store.observe(stateKey(id), { latencyMs: performance.now() - run.startedAt });
+      signal?.removeEventListener("abort", cancel);
+      // Losers still count their elapsed time against their speed, unless the caller gave up on them.
+      if (!signal?.aborted) {
+        for (const [id, run] of running) store.observe(stateKey(id), { latencyMs: performance.now() - run.startedAt });
+      }
       stop.abort();
     }
   }

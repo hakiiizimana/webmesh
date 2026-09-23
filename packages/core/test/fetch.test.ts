@@ -11,6 +11,7 @@ import {
   pageFromMarkdownNew,
   pageFromParallel,
   pageFromTinyfish,
+  pageFromZenRows,
 } from "../src/fetch";
 import { HttpError } from "../src/http";
 import { TargetError } from "../src/router";
@@ -40,9 +41,9 @@ function fetcher(result: FetchedPage | Error, kind: Fetcher["kind"] = "public", 
 
 const page = (content: string): FetchedPage => ({ url: "https://a.com", title: "A", content });
 
-const setup = <R extends Record<string, Fetcher>>(registry: R) =>
+const setup = <R extends Record<string, Fetcher>>(registry: R, store = memoryStore()) =>
   createFetch(registry, {
-    store: memoryStore(),
+    store,
     env: {},
     random: () => 0,
     retryDelayMs: 0,
@@ -126,13 +127,16 @@ test("keeps manual fetchers out of the default pool until a caller names them", 
 
 test("falls back to a reader when the local fetch fails, and never cools the local fetcher down", async () => {
   const registry = { reader: fetcher(page("from reader")), direct: fetcher(new HttpError(403, undefined, "HTTP 403"), "local") };
-  const { fetch } = setup(registry);
+  const store = memoryStore();
+  const { fetch } = setup(registry, store);
 
   const first = await fetch("https://a.com");
-  await fetch("https://a.com");
+  const second = await fetch("https://a.com");
 
   expect(first).toMatchObject({ success: true, data: { content: "from reader" } });
-  expect(registry.direct.calls).toHaveLength(2);
+  expect(second).toEqual(first);
+  expect(registry.direct.calls).toHaveLength(1);
+  expect(store.load().benched["fetch/direct"]).toBeUndefined();
 });
 
 test("tries the local fetch, then the browser, then remote readers, and skips a browser that isn't installed", async () => {
@@ -221,6 +225,39 @@ test("returns raw HTML, links, and normalized source metadata beside markdown", 
         },
       },
     });
+  } finally {
+    server.stop(true);
+  }
+});
+
+test("raw HTML and links share the content's limit", async () => {
+  const links = Array.from({ length: 1_200 }, (_, index) => `<a href="/p/${index}">Link ${index}</a>`).join(" ");
+  const reader = fetcher({ ...page("short page"), rawHtml: `<html>${"x".repeat(5_000)}</html>`, links: links.match(/\/p\/\d+/g) ?? [] }, "api", [
+    "markdown",
+    "rawHtml",
+    "links",
+  ]);
+  const result = await setup({ reader }).fetch("https://a.com", { formats: ["markdown", "rawHtml", "links"], maxCharacters: 1_000 });
+
+  expect(result.success && result.data.rawHtml?.length).toBe(1_000);
+  expect(result.success && result.data.links?.length).toBe(1_000);
+  expect(result).toMatchObject({ success: true, data: { truncated: true } });
+});
+
+test("reports a page too large to read as the page's fault", async () => {
+  const chunk = new Uint8Array(1024 * 1024);
+  const server = Bun.serve({
+    port: 0,
+    fetch: () => new Response(new ReadableStream({ pull: (controller) => controller.enqueue(chunk) }), { headers: { "content-type": "text/html" } }),
+  });
+  const store = memoryStore();
+  try {
+    const result = await createFetch({ direct: fetchers.direct }, { store, env: {}, allowPrivateNetworks: true }).fetch(
+      `http://127.0.0.1:${server.port}/huge`,
+    );
+
+    expect(result).toMatchObject({ success: false, error: expect.stringContaining("larger than") });
+    expect(store.load().health).toEqual({});
   } finally {
     server.stop(true);
   }
@@ -677,4 +714,21 @@ test("normalizes published date formats and rejects invalid dates in pageFromHtm
   </head><body><article><p>${"Blog content sentence here. ".repeat(25)}</p></article></body></html>`;
   const result = await pageFromHtml(htmlWithDate, "https://blog.example/post", "markdown");
   expect(result.publishedAt).toBe("2026-05-10");
+});
+
+// ZenRows answers with the converted page as the body, and reports redirects in a header.
+test("reads a ZenRows markdown body and prefers the final url header", () => {
+  const body = "\n# Example Domain\n\nThis domain is for use in documentation examples.\n";
+
+  expect(pageFromZenRows(body, "https://example.com/", "https://www.example.com/")).toEqual({
+    url: "https://www.example.com/",
+    title: "Example Domain",
+    content: "# Example Domain\n\nThis domain is for use in documentation examples.",
+  });
+  expect(pageFromZenRows(body, "https://example.com/"))
+    .toMatchObject({ url: "https://example.com/", title: "Example Domain" });
+});
+
+test("registers ZenRows as a keyed markdown-only fetcher", () => {
+  expect(fetchers.zenrows).toMatchObject({ kind: "api", env: "ZENROWS_API_KEY", formats: ["markdown"] });
 });

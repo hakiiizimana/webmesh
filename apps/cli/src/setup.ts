@@ -1,25 +1,26 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmdirSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { keyNames, loadSettings, maskProxy, proxyUrl, saveSettings, settingsPath, fetchers } from "@webmesh/core";
+import { keyNames, loadSettings, maskProxy, privateHost, privateHostKey, proxyUrl, saveSettings, settingsPath, fetchers } from "@webmesh/core";
 import { z } from "zod";
 
 const NAME = "webmesh";
-const SKILL = join(".agents", "skills", NAME, "SKILL.md");
+const SKILLS = ["webmesh", "agent-browser"] as const;
 const config = z.record(z.string(), z.json());
 type Entry = z.infer<typeof config>[string];
 
 export type Outcome = "added" | "updated" | "already set" | "removed" | "not set" | `skipped: ${string}` | `failed: ${string}`;
 
-function bundledSkill(): string {
-  const paths = [join(import.meta.dir, "..", "..", "..", "skills", NAME, "SKILL.md"), join(import.meta.dir, "skills", NAME, "SKILL.md")];
+// Source runs from apps/cli/src; a build copies skills into apps/cli/dist.
+function bundledSkill(name: string): string {
+  const paths = [join(import.meta.dir, "..", "..", "..", "skills", name, "SKILL.md"), join(import.meta.dir, "skills", name, "SKILL.md")];
   const path = paths.find(existsSync);
-  if (!path) throw new Error("The bundled Webmesh skill is missing.");
+  if (!path) throw new Error(`The bundled ${name} skill is missing.`);
   return readFileSync(path, "utf8");
 }
 
-export function applySkill(root: string, remove: boolean, content = bundledSkill()): Outcome {
-  const path = join(root, SKILL);
+export function applySkill(root: string, remove: boolean, name: string, content = bundledSkill(name)): Outcome {
+  const path = join(root, ".agents", "skills", name, "SKILL.md");
   if (remove) {
     if (!existsSync(path)) return "not set";
     unlinkSync(path);
@@ -67,7 +68,10 @@ function fileAgent(name: string, path: string, section: string, entry: Entry): A
       if (!change) return `skipped: ${path} isn't plain JSON, add webmesh by hand`;
       if (change.text !== before) {
         mkdirSync(dirname(path), { recursive: true });
-        writeFileSync(path, change.text);
+        // Write then rename, so an interrupted setup never leaves the agent's config half-written.
+        const temp = `${path}.webmesh-${process.pid}`;
+        writeFileSync(temp, change.text);
+        renameSync(temp, path);
       }
       return change.outcome;
     },
@@ -118,10 +122,12 @@ export async function setup(only: string | undefined, remove: boolean): Promise<
     lines.push(`${agent.name.padEnd(12)} ${agent.found() ? await agent.apply(remove) : "not found"}`);
   }
   if (!remove || !only) {
-    lines.push(`${"agent skill".padEnd(12)} ${applySkill(process.cwd(), remove)}`);
+    for (const name of SKILLS) {
+      lines.push(`${"agent skill".padEnd(12)} ${name.padEnd(15)} ${applySkill(process.cwd(), remove, name)}`);
+    }
   }
   if (!remove && Bun.which("webmesh") === null) {
-    lines.push("", "webmesh isn't on your PATH, so agents can't start it. Install it with: npm install -g webmesh.js");
+    lines.push("", "webmesh isn't on your PATH, so agents can't start it. Install it with: npm install -g webmesh.js (it runs on Bun 1.4.1 or newer).");
   }
   if (!remove && !(fetchers["yt-dlp"].available?.() ?? false)) {
     lines.push(
@@ -156,7 +162,29 @@ export function setProxy(url: string | undefined, remove: boolean): SetupResult 
   };
 }
 
-export async function setKey(name: string | undefined, value: string | undefined, remove: boolean): Promise<SetupResult> {
+// The key is read from stdin, never argv: an argument lands in shell history and `ps`.
+// One exact host:port at a time; allowPrivateNetworks stays the all-or-nothing switch.
+export function allowHost(entry: string | undefined, remove: boolean): SetupResult {
+  const parsed = privateHost.safeParse(entry);
+  if (!parsed.success) return { ok: false, lines: ["Usage: webmesh setup allow localhost:3000"] };
+  const key = privateHostKey(parsed.data) ?? parsed.data;
+  const settings = loadSettings();
+  const current = settings.allowPrivateHosts ?? [];
+  const others = current.filter((host) => privateHostKey(host) !== key);
+  if (remove) {
+    settings.allowPrivateHosts = others;
+    saveSettings(settings);
+    return { ok: true, lines: [others.length < current.length ? `${key} is blocked again.` : `${key} was not allowed.`] };
+  }
+  settings.allowPrivateHosts = [...others, key];
+  saveSettings(settings);
+  return {
+    ok: true,
+    lines: [`${key} allowed. Fetches and browser pages can reach it; every other private address stays blocked.`, "Restart your agents to use it."],
+  };
+}
+
+export async function setKey(name: string | undefined, remove: boolean): Promise<SetupResult> {
   const known = keyNames();
   if (!name || !known.includes(name)) return { ok: false, lines: [`Use one of: ${known.join(", ")}.`] };
   const settings = loadSettings();
@@ -165,13 +193,11 @@ export async function setKey(name: string | undefined, value: string | undefined
     saveSettings(settings);
     return { ok: true, lines: [`${name} removed.`] };
   }
-  let key = value;
-  if (!key) {
-    console.log(`Paste ${name} and press Enter:`);
-    for await (const line of console) {
-      key = line.trim();
-      break;
-    }
+  let key: string | undefined;
+  console.log(`Paste ${name} and press Enter:`);
+  for await (const line of console) {
+    key = line.trim();
+    break;
   }
   if (!key) return { ok: false, lines: ["No key given."] };
   settings.keys[name] = key;

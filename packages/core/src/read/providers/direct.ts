@@ -1,5 +1,5 @@
 import { extractText } from "unpdf";
-import { request } from "../../http";
+import { request, ResponseTooLargeError } from "../../http";
 import { blockedUrl } from "../../network";
 import { TargetError } from "../../router";
 import type { FetchedPage, FetchContext } from "../types";
@@ -28,22 +28,21 @@ const isPdf = (type: string, target: string) =>
 
 export async function fetchDirect(
   url: string,
-  { format, formats, signal, proxy, allowPrivateNetworks, resolve }: FetchContext,
+  { format, formats, signal, proxy, allowPrivateNetworks, allowPrivateHosts, resolve }: FetchContext,
 ): Promise<FetchedPage> {
   let target = url;
   let res;
   for (let redirects = 0; ; redirects += 1) {
     if (!allowPrivateNetworks) {
-      const error = await blockedUrl(target, resolve);
+      const error = await blockedUrl(target, resolve, allowPrivateHosts);
       if (error) throw new TargetError(error);
     }
-    res = await request(target, {
-      signal,
-      browser: true,
-      proxy,
-      redirect: "manual",
-      headers: { accept: ACCEPT },
-    });
+    try {
+      res = await request(target, { signal, browser: true, proxy, redirect: "manual", headers: { accept: ACCEPT } });
+    } catch (err) {
+      // The page is too big to read locally; the fetcher itself is fine.
+      throw err instanceof ResponseTooLargeError ? new TargetError(err.message) : err;
+    }
     const location = res.headers.get("location");
     if (!REDIRECT_STATUSES.has(res.status) || !location) break;
     if (redirects >= 9) throw new TargetError("too many redirects");

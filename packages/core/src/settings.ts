@@ -2,13 +2,17 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "n
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { z } from "zod";
+import { privateHostKey } from "./network";
 
 export const proxyUrl = z.url({ protocol: /^https?$/ });
+
+export const privateHost = z.string().refine((entry) => privateHostKey(entry) !== undefined, "Expected host:port, like localhost:3000.");
 
 const settingsSchema = z.object({
   keys: z.record(z.string(), z.string()).default({}),
   proxy: proxyUrl.optional(),
   allowPrivateNetworks: z.boolean().optional(),
+  allowPrivateHosts: z.array(privateHost).optional(),
 });
 
 export type Settings = z.infer<typeof settingsSchema>;

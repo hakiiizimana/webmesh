@@ -57,13 +57,22 @@ export type YtDlpProcessOptions = {
 
 export type YtDlpProcessResult = { success: true; stdout: string } | YtDlpFailure;
 
+const PROXY_ENV = /^(?:https?|all|no)_proxy$/i;
+
+// yt-dlp reads proxies from the environment. A proxy may carry a password, and argv is readable
+// by every local user, so it never goes on the command line.
+export function proxyEnv(proxy: string | undefined) {
+  if (proxy === undefined) return { ...process.env };
+  const inherited = Object.entries(process.env).filter(([name]) => !PROXY_ENV.test(name));
+  return { ...Object.fromEntries(inherited), http_proxy: proxy, https_proxy: proxy, HTTP_PROXY: proxy, HTTPS_PROXY: proxy };
+}
+
 export async function runYtDlp(sourceUrl: string, options: YtDlpProcessOptions): Promise<YtDlpProcessResult> {
   const { executablePath, proxy, signal, timeoutMs, maxOutputBytes } = options;
-  const args = [executablePath ?? defaultYtDlpPath, "--dump-single-json", "--skip-download", "--no-playlist", "--retries", RETRIES,
-    ...(proxy === undefined ? [] : ["--proxy", proxy]), sourceUrl];
+  const args = [executablePath ?? defaultYtDlpPath, "--dump-single-json", "--skip-download", "--no-playlist", "--retries", RETRIES, sourceUrl];
   let process: Bun.Subprocess;
   try {
-    process = Bun.spawn(args, { stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+    process = Bun.spawn(args, { env: proxyEnv(proxy), stdin: "ignore", stdout: "pipe", stderr: "pipe" });
   } catch (error) {
     return failure("spawn", `yt-dlp could not start: ${error instanceof Error ? error.message : String(error)}`);
   }

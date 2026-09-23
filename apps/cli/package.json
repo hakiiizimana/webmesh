@@ -23,7 +23,7 @@
     "access": "public"
   },
   "scripts": {
-    "build": "bun build src/index.ts --target bun --outfile dist/webmesh.js --external wreq-js && mkdir -p dist/skills dist/bin && cp -R ../../skills/* dist/skills/ && cp -R ../../packages/core/bin/. dist/bin/ && cp ../../README.md ../../LICENSE .",
+    "build": "rm -rf dist && bun build src/index.ts --target bun --minify --splitting --outdir dist --entry-naming webmesh.js --chunk-naming chunks/[name]-[hash].[ext] --external wreq-js && mkdir -p dist/skills dist/bin && cp -R ../../skills/* dist/skills/ && cp -R ../../packages/core/bin/. dist/bin/ && cp ../../packages/core/webmesh-agent-browser-config.json dist/ && cp ../../README.md ../../LICENSE .",
     "check-types": "tsc --noEmit",
     "test": "bun test",
     "prepack": "bun run --cwd ../.. build:binaries && bun run build"

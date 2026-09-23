@@ -26,11 +26,15 @@ npm install -g --allow-scripts=agent-browser webmesh.js
 
 ```sh
 webmesh search "sqlite wal mode"
+webmesh search -q "sqlite wal mode,sqlite indexes"
 webmesh fetch https://sqlite.org/wal.html
+webmesh fetch https://sqlite.org/wal.html https://sqlite.org/lang_vacuum.html
 webmesh agent-browser open https://example.com
 ```
 
 `search` finds sources. `fetch` reads a URL and returns page content. `agent-browser` opens a real browser for pages that need clicks, JavaScript, downloads, or a login.
+
+Both take several inputs in one call: repeat `-q`, comma-separate it, or pass more URLs. A batch answers with `{ success, results: [...] }`, where each entry carries its own result, and runs a few at a time.
 
 Run `webmesh --help` for every command. Run `webmesh agent-browser --help` for browser commands.
 
@@ -64,6 +68,16 @@ webmesh setup key EXA_API_KEY
 ```
 
 Webmesh asks you to paste the actual key, then saves it locally. Run `webmesh providers` to see available providers and the key name each one expects.
+
+## Reach a local app
+
+Webmesh blocks localhost and private network addresses, so a web page can't steer your agent into services on your machine. To let it test your own dev server, allow that one address:
+
+```sh
+webmesh setup allow localhost:3000
+```
+
+Only that host and port open up. Run `webmesh setup allow localhost:3000 --remove` to block it again.
 
 ## Log in to a site
 

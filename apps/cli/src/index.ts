@@ -1,39 +1,39 @@
 #!/usr/bin/env bun
 import { parseArgs } from "node:util";
-import { readFileSync } from "node:fs";
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import {
+  adaptBrowserSkill,
   agentBrowserPath,
+  browserCommandName,
   browserEnv,
+  browserProvider,
   browserReference,
   browserUsage,
-  checkProviders,
-  createBrowser,
+  BROWSER_TIMEOUT_MS,
+  cleanEngineOutput,
+  engineArgs,
   ensureBrowser,
-  LOGIN_STATE,
-  createFetch,
-  createSearch,
-  fetchers,
-  isFetcherId,
-  isProviderId,
+  ensureBrowserFilter,
+  FILTER_ENV,
+  filteredEnv,
+  killTree,
   launchFlags,
-  loadSettings,
-  maskProxy,
-  mergeEnv,
-  openStore,
+  loginBypass,
+  loginHosts,
+  LOGIN_STATE,
   prepareBrowserCommand,
-  providers,
-  usesProxy,
-  type FetchResult,
-  type Freshness,
-  type SearchFilters,
-  type SearchResult,
-} from "@webmesh/core";
+  redact,
+  serveBrowserFilter,
+  stopBrowserFilter,
+  type Launch,
+} from "@webmesh/core/browser";
+import { loadSettings, maskProxy, mergeEnv } from "@webmesh/core/settings";
+import { blockedUrl, searchFilters, type FetchFormat, type FetchResult, type FetchedOne, type FetcherId, type Freshness, type ProviderId, type SearchFilters, type SearchResult, type SearchedOne } from "@webmesh/core";
 import { z } from "zod";
 import { version } from "../package.json";
-import { setKey, setProxy, setup, type SetupResult } from "./setup";
+import { extractionSchema, fetchFormatsSchema, limitSchema, maxCharactersSchema, pageUrl } from "./mcp";
+import type { SetupResult } from "./setup";
 
 const settings = (() => {
   try {
@@ -43,37 +43,23 @@ const settings = (() => {
     process.exit(1);
   }
 })();
-const env = mergeEnv(settings.keys, process.env);
-const store = openStore();
-const searcher = createSearch(providers, { store, cache: store, env, proxy: settings.proxy });
-const fetcher = createFetch(fetchers, {
-  store,
-  env,
-  proxy: settings.proxy,
-  allowPrivateNetworks: settings.allowPrivateNetworks,
-});
 
-const limitSchema = z.number().int().min(1).max(20);
-const pageUrl = z.url({ protocol: /^https?$/ });
-const fetchFormatSchema = z.enum(["markdown", "html", "rawHtml", "links", "json"]);
-const fetchFormatsSchema = z.array(fetchFormatSchema).min(1).max(5);
-const extractionSchema = z.record(z.string(), z.json());
-const maxCharactersSchema = z.number().int().min(1_000).max(1_000_000);
-const screenshot = z.object({ path: z.string().regex(/\.(png|jpe?g|webp)$/i) });
-const IMAGE_TYPES = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", webp: "image/webp" } as const;
-const isImageType = (ext: string): ext is keyof typeof IMAGE_TYPES => Object.hasOwn(IMAGE_TYPES, ext);
-const date = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Expected YYYY-MM-DD.");
-const filtersSchema = z.object({
-  freshness: z.union([z.enum(["day", "week", "month", "year"]), z.object({ from: date, to: date.optional() })]).optional(),
-  includeDomains: z.array(z.string().min(1)).optional(),
-  excludeDomains: z.array(z.string().min(1)).optional(),
-  type: z.enum(["web", "news", "video"]).optional(),
-  country: z.string().min(1).optional(),
-  language: z.string().min(1).optional(),
-  safeSearch: z.enum(["strict", "moderate", "off"]).optional(),
-  exactMatch: z.boolean().optional(),
-  searchDepth: z.enum(["fast", "deep"]).optional(),
-});
+async function engines() {
+  const { createFetch, createSearch, fetchers, openStore, providers } = await import("@webmesh/core");
+  const store = openStore();
+  const env = mergeEnv(settings.keys, process.env);
+  return {
+    searcher: createSearch(providers, { store, cache: store, env, proxy: settings.proxy }),
+    fetcher: createFetch(fetchers, {
+      store,
+      cache: store,
+      env,
+      proxy: settings.proxy,
+      allowPrivateNetworks: settings.allowPrivateNetworks,
+      allowPrivateHosts: settings.allowPrivateHosts,
+    }),
+  };
+}
 
 function list(value: string | undefined): string[] | undefined {
   const values = value?.split(",").map((part) => part.trim()).filter(Boolean);
@@ -107,7 +93,7 @@ type ParsedCliFilters = { ok: true; filters: SearchFilters } | { ok: false; erro
 
 function parseCliFilters(values: CliFilterValues): ParsedCliFilters {
   try {
-    const parsed = filtersSchema.safeParse({
+    const parsed = searchFilters.safeParse({
       freshness: parseFreshness(values.freshness),
       includeDomains: list(values.includeDomains),
       excludeDomains: list(values.excludeDomains),
@@ -125,156 +111,100 @@ function parseCliFilters(values: CliFilterValues): ParsedCliFilters {
   }
 }
 
-async function runSearch(
-  query: string,
-  { limit, only, filters }: { limit?: string; only?: string; filters?: SearchFilters } = {},
-): Promise<SearchResult> {
-  if (!query) return { success: false, error: "Missing query." };
+type SearchArgs = { limit?: string; only?: string; filters?: SearchFilters };
+type FetchArgs = { formats?: string; schemaFile?: string; maxCharacters?: string; only?: string };
+type SearchReady = { limit?: number; only?: ProviderId[]; filters?: SearchFilters };
+type FetchReady = { formats?: FetchFormat[]; schema?: z.infer<typeof extractionSchema>; maxCharacters?: number; only?: FetcherId[] };
+type Prepared<T> = { ok: true; options: T } | { ok: false; error: string };
+
+async function prepareSearch({ limit, only, filters }: SearchArgs): Promise<Prepared<SearchReady>> {
   const parsedLimit = limit === undefined ? undefined : limitSchema.safeParse(Number(limit));
-  if (parsedLimit && !parsedLimit.success) return { success: false, error: "Limit must be a whole number from 1 to 20." };
-  const requested = only?.split(",").map((id) => id.trim());
+  if (parsedLimit && !parsedLimit.success) return { ok: false, error: "Limit must be a whole number from 1 to 20." };
+  const { isProviderId } = await import("@webmesh/core");
+  const requested = list(only);
   const unknown = requested?.filter((id) => !isProviderId(id));
-  if (unknown?.length) return { success: false, error: `Unknown provider(s): ${unknown.join(", ")}.` };
-  return searcher.search(query, {
-    limit: parsedLimit?.data,
-    only: requested?.filter(isProviderId),
-    filters,
-  });
+  if (unknown?.length) return { ok: false, error: `Unknown provider(s): ${unknown.join(", ")}.` };
+  return { ok: true, options: { limit: parsedLimit?.data, only: requested?.filter(isProviderId), filters } };
 }
 
-async function runFetch(
-  url: string | undefined,
-  { formats, schemaFile, maxCharacters, only }: { formats?: string; schemaFile?: string; maxCharacters?: string; only?: string } = {},
-): Promise<FetchResult> {
-  const parsedUrl = pageUrl.safeParse(url);
-  if (!parsedUrl.success) return { success: false, error: "Pass an http or https URL." };
+async function prepareFetch({ formats, schemaFile, maxCharacters, only }: FetchArgs): Promise<Prepared<FetchReady>> {
   const parsedFormats = formats === undefined ? undefined : fetchFormatsSchema.safeParse(list(formats));
-  if (parsedFormats && !parsedFormats.success) return { success: false, error: "Formats must be markdown, html, rawHtml, links, or json." };
+  if (parsedFormats && !parsedFormats.success) return { ok: false, error: "Formats must be markdown, html, rawHtml, links, or json." };
   let schema: z.infer<typeof extractionSchema> | undefined;
   if (schemaFile) {
     try {
       const parsed = extractionSchema.safeParse(JSON.parse(readFileSync(schemaFile, "utf8")));
-      if (!parsed.success) return { success: false, error: "Schema file must contain a JSON object." };
+      if (!parsed.success) return { ok: false, error: "Schema file must contain a JSON object." };
       schema = parsed.data;
     } catch {
-      return { success: false, error: `Could not read schema file: ${schemaFile}.` };
+      return { ok: false, error: `Could not read schema file: ${schemaFile}.` };
     }
   }
   const parsedMax = maxCharacters === undefined ? undefined : maxCharactersSchema.safeParse(Number(maxCharacters));
-  if (parsedMax && !parsedMax.success) return { success: false, error: "Max characters must be a whole number from 1000 to 1000000." };
-  const requested = only?.split(",").map((id) => id.trim());
+  if (parsedMax && !parsedMax.success) return { ok: false, error: "Max characters must be a whole number from 1000 to 1000000." };
+  const { isFetcherId } = await import("@webmesh/core");
+  const requested = list(only);
   const unknown = requested?.filter((id) => !isFetcherId(id));
-  if (unknown?.length) return { success: false, error: `Unknown fetcher(s): ${unknown.join(", ")}.` };
-  return fetcher.fetch(parsedUrl.data, {
-    formats: parsedFormats?.data,
-    schema,
-    maxCharacters: parsedMax?.data,
-    only: requested?.filter(isFetcherId),
-  });
+  if (unknown?.length) return { ok: false, error: `Unknown fetcher(s): ${unknown.join(", ")}.` };
+  return { ok: true, options: { formats: parsedFormats?.data, schema, maxCharacters: parsedMax?.data, only: requested?.filter(isFetcherId) } };
+}
+
+async function runSearch(query: string, args: SearchArgs = {}): Promise<SearchResult> {
+  if (!query) return { success: false, error: "Missing query." };
+  const prepared = await prepareSearch(args);
+  if (!prepared.ok) return { success: false, error: prepared.error };
+  const { searcher } = await engines();
+  return searcher.search(query, prepared.options);
+}
+
+async function runSearchMany(
+  queries: readonly string[],
+  args: SearchArgs = {},
+): Promise<{ success: true; results: SearchedOne[] } | { success: false; error: string }> {
+  const empty = queries.findIndex((query) => query.trim() === "");
+  if (empty !== -1) return { success: false, error: `Query ${empty + 1} is empty.` };
+  const prepared = await prepareSearch(args);
+  if (!prepared.ok) return { success: false, error: prepared.error };
+  const { searcher } = await engines();
+  return { success: true, results: await searcher.searchMany(queries, prepared.options) };
+}
+
+async function runFetch(url: string | undefined, args: FetchArgs = {}): Promise<FetchResult> {
+  const parsedUrl = pageUrl.safeParse(url);
+  if (!parsedUrl.success) return { success: false, error: "Pass an http or https URL." };
+  const prepared = await prepareFetch(args);
+  if (!prepared.ok) return { success: false, error: prepared.error };
+  const { fetcher } = await engines();
+  return fetcher.fetch(parsedUrl.data, prepared.options);
+}
+
+async function runFetchMany(
+  urls: readonly string[],
+  args: FetchArgs = {},
+): Promise<{ success: true; results: FetchedOne[] } | { success: false; error: string }> {
+  const invalid = urls.filter((url) => !pageUrl.safeParse(url).success);
+  if (invalid.length > 0) return { success: false, error: `Not an http or https URL: ${invalid.join(", ")}.` };
+  const prepared = await prepareFetch(args);
+  if (!prepared.ok) return { success: false, error: prepared.error };
+  const { fetcher } = await engines();
+  return { success: true, results: await fetcher.fetchMany(urls, prepared.options) };
 }
 
 async function serveMcp() {
-  const server = new McpServer({ name: "webmesh", version });
-  server.registerTool(
-    "web_search",
-    {
-      title: "Web search",
-      description:
-        "Search the web. Returns JSON: { success, provider, attempts, data: [{ title, url, description, publishedAt? }] }. " +
-        "publishedAt is YYYY-MM-DD when the provider reports it. " +
-        "Routes to the most reliable free search providers, falls back when one fails or is slow, " +
-        "and uses keyed providers only when free ones can't answer.",
-      inputSchema: {
-        query: z.string().min(1).describe("What to search for."),
-        limit: limitSchema.optional().describe("Max results (default 10)."),
-        providers: z.array(z.string()).optional().describe("Only use these provider IDs."),
-        filters: filtersSchema.optional().describe("Provider-neutral search filters."),
-      },
-    },
-    async ({ query, limit, providers: requested, filters }) => {
-      const unknown = requested?.filter((id) => !isProviderId(id));
-      if (unknown?.length) {
-        const result: SearchResult = { success: false, error: `Unknown provider(s): ${unknown.join(", ")}.` };
-        return { content: [{ type: "text", text: JSON.stringify(result) }], isError: true };
-      }
-      const result = await searcher.search(query, { limit, only: requested?.filter(isProviderId), filters });
-      return { content: [{ type: "text", text: JSON.stringify(result) }], isError: !result.success };
-    },
-  );
-  server.registerTool(
-    "web_fetch",
-    {
-      title: "Fetch a page",
-      description:
-        "Fetch a web page and return one or more representations: markdown, cleaned HTML, raw HTML, links, or schema-shaped JSON. " +
-        "Returns JSON: { success, data: { url, title, format, content, metadata, rawHtml?, links?, json?, truncated } }. " +
-        "Tries a local fetch first, then remote readers, and uses keyed readers only when free ones can't answer.",
-      inputSchema: {
-        url: pageUrl.describe("The http or https page to fetch."),
-        format: fetchFormatSchema.optional().describe("One format; markdown is the default."),
-        formats: fetchFormatsSchema.optional().describe("One or more output formats."),
-        schema: extractionSchema.optional().describe("JSON Schema-like object used when formats includes json."),
-        maxCharacters: maxCharactersSchema.optional().describe("Cut the content at this many characters (default 50000)."),
-        providers: z.array(z.string()).optional().describe("Only use these fetcher IDs."),
-      },
-    },
-    async ({ url, format, formats, schema, maxCharacters, providers: requested }) => {
-      if (format && formats) {
-        const result: FetchResult = { success: false, error: "Pass format or formats, not both." };
-        return { content: [{ type: "text", text: JSON.stringify(result) }], isError: true };
-      }
-      const unknown = requested?.filter((id) => !isFetcherId(id));
-      if (unknown?.length) {
-        const result: FetchResult = { success: false, error: `Unknown fetcher(s): ${unknown.join(", ")}.` };
-        return { content: [{ type: "text", text: JSON.stringify(result) }], isError: true };
-      }
-      const result = await fetcher.fetch(url, {
-        formats: formats ?? (format ? [format] : undefined),
-        schema,
-        maxCharacters,
-        only: requested?.filter(isFetcherId),
-      });
-      return { content: [{ type: "text", text: JSON.stringify(result) }], isError: !result.success };
-    },
-  );
+  const [{ StdioServerTransport }, { createBrowser }, { createMcpServer }] = await Promise.all([
+    import("@modelcontextprotocol/sdk/server/stdio.js"),
+    import("@webmesh/core/browser"),
+    import("./mcp"),
+  ]);
+  const { searcher, fetcher } = await engines();
   const browser = createBrowser(`webmesh-mcp-${process.pid}`, {
     restore: LOGIN_STATE,
     redact: process.env.WEBMESH_REVEAL_SECRETS !== "1",
     proxy: settings.proxy,
     allowPrivateNetworks: settings.allowPrivateNetworks,
+    allowPrivateHosts: settings.allowPrivateHosts,
   });
-  if (agentBrowserPath()) {
-    server.registerTool(
-      "agent-browser",
-      {
-        title: "Agent browser",
-        description:
-          "Drive a real Chrome browser: open pages, click, type, read, and take screenshots. Pass one browser command as args. " +
-          'Loop: ["open", url], then ["snapshot", "-i"] to list interactive elements as @e1, @e2, then ["click", "@e2"], ' +
-          '["fill", "@e3", "text"], or ["press", "Enter"]. Run ["snapshot", "-i"] again after the page changes; refs go stale. ' +
-          '["screenshot", "--annotate"] labels elements with their refs; add "--if-changed" to skip unchanged images. ' +
-          '["read"] returns the rendered page as text. Also ["get", "text", "@e1"], ["select", "@e4", "value"], ["upload", "@e5", "/path"], ' +
-          '["scroll", "down"], ["tab", "list"], ["back"]. Run `webmesh agent-browser --help` for the command list. ' +
-          "Use absolute paths for pdf, upload, and --screenshot-dir; relative paths resolve from the browser's background process. " +
-          "Sessions start with the logins saved by `webmesh login`. Secrets in output are redacted. " +
-          "The session belongs to this server and closes when it exits. Returns JSON: { success, data } or { success, error }.",
-        inputSchema: {
-          args: z.array(z.string()).min(1).describe('One browser command, e.g. ["click", "@e2"].'),
-        },
-      },
-      async ({ args }) => {
-        const result = await browser.run(args);
-        const content: CallToolResult["content"] = [{ type: "text", text: JSON.stringify(result) }];
-        const shot = screenshot.safeParse(result.success ? result.data : null);
-        const ext = shot.success ? (shot.data.path.split(".").pop() ?? "").toLowerCase() : "";
-        if (shot.success && isImageType(ext)) {
-          const data = Buffer.from(await Bun.file(shot.data.path).arrayBuffer()).toString("base64");
-          content.push({ type: "image", data, mimeType: IMAGE_TYPES[ext] });
-        }
-        return { content, isError: !result.success };
-      },
-    );
-  }
+  const server = createMcpServer({ version, searcher, fetcher, browser: agentBrowserPath() ? browser : undefined });
   const shutdown = async () => {
     await browser.close();
     process.exit(0);
@@ -286,6 +216,7 @@ async function serveMcp() {
 }
 
 const USAGE = `webmesh search <query>     search the web (JSON)
+  -q, --queries <a,b>        also search these; repeatable, or comma-separate
   -n, --limit <n>            max results (default 10)
   -p, --providers <a,b>      only use these providers
       --freshness <value>    day, week, month, year, or FROM..TO
@@ -297,67 +228,262 @@ const USAGE = `webmesh search <query>     search the web (JSON)
       --safe-search <strict|moderate|off>
       --exact-match
       --search-depth <fast|deep>
-webmesh fetch <url>        fetch one or more page representations (JSON)
+webmesh fetch <url>...     fetch one or more pages (JSON)
       --format <markdown|html|rawHtml|links|json>
                               comma-separate formats, default: markdown
       --schema-file <path>  JSON schema for the json format
       --max-characters <n>   cut content at n characters (default 50000)
   -p, --providers <a,b>      only use these fetchers
-webmesh browser <command>    drive Chrome, e.g. open <url>, snapshot -i, click @e2
+webmesh agent-browser <command>    drive Chrome, e.g. open <url>, snapshot -i, click @e2
 webmesh setup                add webmesh to every coding agent found on this machine
   -a, --agent <name>         only this agent (claude-code, codex, cursor, pi, opencode)
       --remove               take webmesh out again
 webmesh setup proxy <url>    send scrapers, local fetches, and anonymous browsing through a proxy (--remove to stop)
+webmesh setup allow <host:port>  let pages and fetches reach one local or private address, e.g. localhost:3000 (--remove to block again)
 webmesh setup key <NAME>     save an API key such as EXA_API_KEY; reads it from stdin (--remove to delete)
 webmesh login <url>          log in once in a visible browser; later browser sessions start logged in
 webmesh logout               forget saved logins
+webmesh logins               list the hosts you have saved logins for (JSON)
 webmesh check                try every provider once; exits 1 if one looks broken (not just blocked)
 webmesh providers            list search and fetch providers with cooldowns and health (JSON)
 webmesh mcp                  run the MCP server over stdio`;
 
-if (process.argv[2] === "browser") {
-  const args = process.argv.slice(3);
-  if (args.length === 1 && args[0] === "--all") {
-    console.log(browserReference());
-    process.exit(0);
+function safeEngineOutput(line: string): string {
+  const cleaned = cleanEngineOutput(line);
+  if (process.env.WEBMESH_REVEAL_SECRETS === "1") return cleaned;
+  try {
+    const parsed = z.json().safeParse(JSON.parse(cleaned));
+    if (parsed.success) return JSON.stringify(redact(parsed.data));
+  } catch {
+    // Plain engine output is expected for commands that do not support JSON.
   }
+  return String(redact(cleaned));
+}
+
+async function forwardEngineOutput(stream: ReadableStream<Uint8Array>, write: (text: string) => void): Promise<void> {
+  const decoder = new TextDecoder();
+  let pending = "";
+  for await (const chunk of stream) {
+    pending += decoder.decode(chunk, { stream: true });
+    const lines = pending.split("\n");
+    pending = lines.pop() ?? "";
+    for (const line of lines) write(`${safeEngineOutput(line)}\n`);
+  }
+  pending += decoder.decode();
+  if (pending !== "") write(safeEngineOutput(pending));
+}
+
+async function runEngine(bin: string, args: string[], launchEnv: Launch["env"] = {}): Promise<number> {
+  const proc = Bun.spawn(engineArgs(bin, args), {
+    env: { ...browserEnv(settings.proxy), ...launchEnv },
+    stdin: "inherit",
+    stdout: "pipe",
+    stderr: "pipe",
+    detached: true,
+  });
+  const timer = setTimeout(() => killTree(proc), BROWSER_TIMEOUT_MS);
+  const [exitCode] = await Promise.all([
+    proc.exited,
+    forwardEngineOutput(proc.stdout, (text) => process.stdout.write(text)),
+    forwardEngineOutput(proc.stderr, (text) => process.stderr.write(text)),
+  ]);
+  clearTimeout(timer);
+  if (proc.signalCode) {
+    console.error(`Webmesh agent-browser timed out after ${BROWSER_TIMEOUT_MS / 1000}s. Raise it with WEBMESH_AGENT_BROWSER_TIMEOUT_MS.`);
+    return 1;
+  }
+  return exitCode;
+}
+
+const skillPayload = z.object({
+  data: z.array(z.object({ content: z.string(), name: z.string() }).passthrough()),
+}).passthrough();
+
+function bundledAgentBrowserSkill(): string {
+  const paths = [
+    join(import.meta.dir, "skills", "agent-browser", "SKILL.md"),
+    join(import.meta.dir, "../../../skills/agent-browser/SKILL.md"),
+  ];
+  const path = paths.find(existsSync);
+  if (!path) throw new Error("The bundled webmesh agent-browser skill is missing.");
+  return readFileSync(path, "utf8");
+}
+
+function adaptSkillDocument(content: string, name?: string): string {
+  const skill = name ?? content.match(/^name:\s*([^\s]+)$/m)?.[1];
+  if (!skill) throw new Error("The engine returned a skill without a name.");
+  return adaptBrowserSkill(skill, skill === "core" ? bundledAgentBrowserSkill() : content);
+}
+
+async function captureEngine(bin: string, args: string[]): Promise<{ exitCode: number; stderr: string; stdout: string }> {
+  const proc = Bun.spawn(engineArgs(bin, args), {
+    env: browserEnv(settings.proxy),
+    stdin: "ignore",
+    stdout: "pipe",
+    stderr: "pipe",
+    detached: true,
+  });
+  const timer = setTimeout(() => killTree(proc), BROWSER_TIMEOUT_MS);
+  try {
+    const [stdout, stderr, exitCode] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+      proc.exited,
+    ]);
+    return { exitCode, stderr, stdout };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function runSkills(bin: string, args: string[], json: boolean): Promise<number> {
+  const subcommand = args[0] ?? "list";
+  if (subcommand === "path") {
+    console.error("webmesh does not expose unadapted skill files; use `webmesh agent-browser skills get <name> --full`.");
+    return 1;
+  }
+  if (subcommand === "list" || args.length === 0) {
+    const result = await captureEngine(bin, ["skills", "list", ...(json ? ["--json"] : [])]);
+    if (result.exitCode !== 0) {
+      console.error(safeEngineOutput(result.stderr.trim() || result.stdout.trim()));
+      return result.exitCode;
+    }
+    if (!json) {
+      const list = result.stdout
+        .split("\n")
+        .map(safeEngineOutput)
+        .join("\n")
+        .replace(/^(\s*)core\s+/m, "$1agent-browser  ");
+      process.stdout.write(list);
+      return 0;
+    }
+    try {
+      const parsed = z.object({ data: z.array(z.object({ name: z.string() }).passthrough()) }).passthrough()
+        .parse(JSON.parse(result.stdout));
+      const data = parsed.data.map((skill) => ({ ...skill, name: skill.name === "core" ? "agent-browser" : skill.name }));
+      console.log(JSON.stringify({ ...parsed, data }));
+      return 0;
+    } catch (error) {
+      console.error(error instanceof Error ? error.message : String(error));
+      return 1;
+    }
+  }
+  if (subcommand !== "get") return runEngine(bin, ["skills", ...args, ...(json ? ["--json"] : [])]);
+
+  const requested = args.map((arg) => arg === "agent-browser" ? "core" : arg);
+  const command = ["skills", ...requested, ...(requested.includes("--full") ? [] : ["--full"]), ...(json ? ["--json"] : [])];
+  const result = await captureEngine(bin, command);
+  if (result.exitCode !== 0) {
+    console.error(safeEngineOutput(result.stderr.trim() || result.stdout.trim()));
+    return result.exitCode;
+  }
+
+  try {
+    if (json) {
+      const parsed = skillPayload.parse(JSON.parse(result.stdout));
+      const data = parsed.data.map((skill) => ({
+        ...skill,
+        content: adaptSkillDocument(skill.content, skill.name),
+        name: skill.name === "core" ? "agent-browser" : skill.name,
+      }));
+      console.log(JSON.stringify({ ...parsed, data }));
+      return 0;
+    }
+    const documents = result.stdout.split(/(?=^---\nname:)/m).filter((document) => document.trim() !== "");
+    console.log(documents.map((document) => adaptSkillDocument(document)).join("\n").trimEnd());
+    return 0;
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    return 1;
+  }
+}
+
+// The shared session outlives this process, so its private-network filter runs detached and is
+// reused by every call. With allowPrivateNetworks the browser goes out directly or via the proxy.
+async function cliLaunch(bin: string): Promise<Launch> {
+  if (settings.allowPrivateNetworks) return launchFlags(bin, { restore: LOGIN_STATE, proxy: settings.proxy });
+  const directHosts = (await loginBypass(bin)) ?? [];
+  try {
+    const url = await ensureBrowserFilter([process.execPath, Bun.main, "browser-filter"], {
+      upstreamProxy: settings.proxy,
+      directHosts,
+      allowedHosts: settings.allowPrivateHosts ?? [],
+    });
+    return { flags: (await launchFlags(bin, { restore: LOGIN_STATE })).flags, env: filteredEnv(url) };
+  } catch (error) {
+    console.error(`Could not start the browser network filter: ${error instanceof Error ? error.message : String(error)}`);
+    process.exit(1);
+  }
+}
+
+if (process.argv[2] === "agent-browser") {
+  const args = process.argv.slice(3);
+  const bin = agentBrowserPath();
+  const help = async (text: (found: string) => Promise<string>): Promise<never> => {
+    console.log(bin ? await text(bin) : "Webmesh agent-browser support is not installed.");
+    process.exit(bin ? 0 : 1);
+  };
+  if (args.length === 1 && args[0] === "--all") await help(browserReference);
   if (args.length === 0 || args[0] === "help" || args[0] === "--full-help" || args.includes("--help") || args.includes("-h")) {
-    console.log(browserUsage());
-    process.exit(0);
+    await help(browserUsage);
   }
   const prepared = prepareBrowserCommand(args);
   if ("error" in prepared) {
     console.error(prepared.error);
     process.exit(1);
   }
-  const bin = agentBrowserPath();
   if (!bin) {
-    console.error("Webmesh browser support is not installed.");
+    console.error("Webmesh agent-browser support is not installed.");
     process.exit(1);
   }
-  if (prepared.args[0] !== "close") {
+  const command = browserCommandName(prepared.args);
+  if (command === "skills") {
+    const index = prepared.args.indexOf(command);
+    process.exit(await runSkills(bin, prepared.args.slice(index + 1), args.includes("--json")));
+  }
+  if (!settings.allowPrivateNetworks) {
+    for (const arg of prepared.args) {
+      if (!/^https?:\/\//i.test(arg)) continue;
+      const error = await blockedUrl(arg, undefined, settings.allowPrivateHosts);
+      if (error) {
+        console.error(error);
+        process.exit(1);
+      }
+    }
+  }
+  const external = command === "connect" || browserProvider(prepared.args) !== undefined;
+  if (command !== "close" && !external) {
     const installError = await ensureBrowser(bin);
     if (installError) {
       console.error(installError);
       process.exit(1);
     }
   }
-  const launch = await launchFlags(bin, { restore: LOGIN_STATE, proxy: settings.proxy });
-  const proc = Bun.spawn([process.execPath, bin, "--session", "webmesh", ...launch, ...prepared.args], {
-    env: browserEnv(settings.proxy),
-    stdio: ["inherit", "inherit", "inherit"],
-  });
-  process.exit(await proc.exited);
+  const launch = external ? { flags: [], env: {} } : await cliLaunch(bin);
+  const exitCode = await runEngine(bin, ["--session", "webmesh", ...launch.flags, ...prepared.args], launch.env);
+  // The session is gone, so its filter has nothing left to guard.
+  if (command === "close" && exitCode === 0) stopBrowserFilter();
+  process.exit(exitCode);
+}
+
+if (process.argv[2] === "logins") {
+  const bin = agentBrowserPath();
+  if (!bin) {
+    console.error("Webmesh agent-browser support is not installed.");
+    process.exit(1);
+  }
+  const hosts = await loginHosts(bin);
+  console.log(JSON.stringify({ success: hosts !== undefined, data: { hosts: hosts ?? [] } }, null, 2));
+  process.exit(hosts === undefined ? 1 : 0);
 }
 
 if (process.argv[2] === "login" || process.argv[2] === "logout") {
   const bin = agentBrowserPath();
   if (!bin) {
-    console.error("Webmesh browser support is not installed.");
+    console.error("Webmesh agent-browser support is not installed.");
     process.exit(1);
   }
-  const run = (args: string[]) =>
-    Bun.spawn([process.execPath, bin, ...args], { env: browserEnv(settings.proxy), stdio: ["inherit", "inherit", "inherit"] }).exited;
+  const run = (args: string[]) => runEngine(bin, args);
   if (process.argv[2] === "logout") process.exit(await run(["state", "clear", LOGIN_STATE]));
   const installError = await ensureBrowser(bin);
   if (installError) {
@@ -378,31 +504,45 @@ if (process.argv[2] === "login" || process.argv[2] === "logout") {
   process.exit(0);
 }
 
-const { values, positionals } = parseArgs({
-  allowPositionals: true,
-  options: {
-    limit: { type: "string", short: "n" },
-    providers: { type: "string", short: "p" },
-    freshness: { type: "string" },
-    "include-domains": { type: "string" },
-    "exclude-domains": { type: "string" },
-    type: { type: "string" },
-    country: { type: "string" },
-    language: { type: "string" },
-    "safe-search": { type: "string" },
-    "exact-match": { type: "boolean" },
-    "search-depth": { type: "string" },
-    format: { type: "string" },
-    "schema-file": { type: "string" },
-    "max-characters": { type: "string" },
-    agent: { type: "string", short: "a" },
-    remove: { type: "boolean" },
-    help: { type: "boolean", short: "h" },
-  },
-});
+const { values, positionals } = (() => {
+  try {
+    return parseArgs({
+      allowPositionals: true,
+      options: {
+        limit: { type: "string", short: "n" },
+        providers: { type: "string", short: "p" },
+        freshness: { type: "string" },
+        "include-domains": { type: "string" },
+        "exclude-domains": { type: "string" },
+        type: { type: "string" },
+        country: { type: "string" },
+        language: { type: "string" },
+        "safe-search": { type: "string" },
+        "exact-match": { type: "boolean" },
+        "search-depth": { type: "string" },
+        format: { type: "string" },
+        "schema-file": { type: "string" },
+        "max-characters": { type: "string" },
+        agent: { type: "string", short: "a" },
+        remove: { type: "boolean" },
+        queries: { type: "string", short: "q", multiple: true },
+        version: { type: "boolean" },
+        help: { type: "boolean", short: "h" },
+      },
+    });
+  } catch {
+    console.log(USAGE);
+    process.exit(1);
+  }
+})();
 
 const [command, ...rest] = positionals;
 const print = <T,>(value: T) => console.log(JSON.stringify(value, null, 2));
+
+if (values.version) {
+  console.log(version);
+  process.exit(0);
+}
 
 if (command === "search" && !values.help) {
   const parsedFilters = parseCliFilters({
@@ -416,39 +556,61 @@ if (command === "search" && !values.help) {
     exactMatch: values["exact-match"],
     searchDepth: values["search-depth"],
   });
-  const result = parsedFilters.ok
-    ? await runSearch(rest.join(" "), {
-        limit: values.limit,
-        only: values.providers,
-        filters: parsedFilters.filters,
-      })
-    : { success: false, error: parsedFilters.error };
-  print(result);
-  if (!result.success) process.exitCode = 1;
+  const queries = [...(values.queries ?? []).flatMap((value) => list(value) ?? []), ...(rest.length > 0 ? [rest.join(" ")] : [])];
+  if (queries.length === 0) {
+    print({ success: false, error: "Missing query." });
+    process.exitCode = 1;
+  } else if (queries.length === 1) {
+    const result = parsedFilters.ok
+      ? await runSearch(queries[0] ?? "", { limit: values.limit, only: values.providers, filters: parsedFilters.filters })
+      : { success: false, error: parsedFilters.error };
+    print(result);
+    if (!result.success) process.exitCode = 1;
+  } else {
+    const result: { success: true; results: SearchedOne[] } | { success: false; error: string } = parsedFilters.ok
+      ? await runSearchMany(queries, { limit: values.limit, only: values.providers, filters: parsedFilters.filters })
+      : { success: false, error: parsedFilters.error };
+    print(result);
+    if (!result.success || result.results.some((entry) => !entry.success)) process.exitCode = 1;
+  }
 } else if (command === "fetch" && !values.help) {
-  const result = await runFetch(rest[0], {
+  const args = {
     formats: values.format,
     schemaFile: values["schema-file"],
     maxCharacters: values["max-characters"],
     only: values.providers,
-  });
-  print(result);
-  if (!result.success) process.exitCode = 1;
+  };
+  if (rest.length > 1) {
+    const result: { success: true; results: FetchedOne[] } | { success: false; error: string } = await runFetchMany(rest, args);
+    print(result);
+    if (!result.success || result.results.some((entry) => !entry.success)) process.exitCode = 1;
+  } else {
+    const result = await runFetch(rest[0], args);
+    print(result);
+    if (!result.success) process.exitCode = 1;
+  }
 } else if (command === "setup" && !values.help) {
+  const { allowHost, setKey, setProxy, setup } = await import("./setup");
   const [target, ...params] = rest;
   const remove = values.remove === true;
   let outcome: SetupResult;
   if (target === "proxy") outcome = setProxy(params[0], remove);
-  else if (target === "key") outcome = await setKey(params[0], params[1], remove);
+  else if (target === "allow") outcome = allowHost(params[0], remove);
+  else if (target === "key" && params[1] !== undefined) {
+    outcome = { ok: false, lines: [`Pass the key on stdin, not as an argument: webmesh setup key ${params[0]}`] };
+  } else if (target === "key") outcome = await setKey(params[0], remove);
   else outcome = { ok: true, lines: await setup(values.agent, remove) };
   console.log(outcome.lines.join("\n"));
   if (!outcome.ok) process.exitCode = 1;
 } else if (command === "check" && !values.help) {
-  const results = await checkProviders(env, settings.proxy);
+  const { checkProviders } = await import("@webmesh/core");
+  const results = await checkProviders(mergeEnv(settings.keys, process.env), settings.proxy);
   const broken = results.filter((result) => result.status === "broken");
   print({ success: broken.length === 0, data: results });
   if (broken.length > 0) process.exitCode = 1;
 } else if (command === "providers") {
+  const { usesProxy } = await import("@webmesh/core");
+  const { searcher, fetcher } = await engines();
   const viaProxy = <T extends { kind: Parameters<typeof usesProxy>[0] }>(rows: T[]) =>
     rows.map((row) => ({ ...row, proxy: Boolean(settings.proxy) && usesProxy(row.kind) }));
   print({
@@ -461,6 +623,9 @@ if (command === "search" && !values.help) {
   });
 } else if (command === "mcp") {
   await serveMcp();
+} else if (command === "browser-filter") {
+  // The detached network filter for the CLI's browser session; see browserFilter.ts.
+  await serveBrowserFilter(process.env[FILTER_ENV]);
 } else {
   console.log(USAGE);
 }

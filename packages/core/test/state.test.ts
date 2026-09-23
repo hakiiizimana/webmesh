@@ -4,7 +4,9 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { memoryCache, openStore } from "../src/state";
+import { successfulSearch } from "../src/search/types";
 import type { SuccessfulSearch } from "../src/types";
+import { z } from "zod";
 
 const result: SuccessfulSearch = {
   success: true as const,
@@ -25,23 +27,26 @@ test("sessions sharing one store file see each other's cooldowns, health, and ca
   const state = second.load();
   expect(state.benched.ddg).toBe(5_000);
   expect(state.health.brave?.success).toBeCloseTo(0.49);
-  expect(second.read("q", 99)).toEqual(result);
-  expect(second.read("q", 100)).toBeUndefined();
+  expect(second.read("q", successfulSearch, 99)).toEqual(result);
+  expect(second.read("q", successfulSearch, 100)).toBeUndefined();
 });
 
-test("memory and disk caches store the clean successful response shape", () => {
+test("the caller's schema decides what survives a cache round trip", () => {
   const dirty = {
     ...result,
     cachedAt: 1,
     data: [{ title: "t", url: "https://t.com", description: "", extra: true }],
   };
+
   const memory = memoryCache();
   memory.write("q", dirty, 100);
-  expect(memory.read("q", 0)).toEqual(result);
+  expect(memory.read("q", z.json(), 0)).toEqual(dirty);
+  expect(memory.read("q", successfulSearch, 0)).toEqual(result);
 
   const store = openStore(join(mkdtempSync(join(tmpdir(), "webmesh-")), "webmesh.db"));
   store.write("q", dirty, 100);
-  expect(store.read("q", 0)).toEqual(result);
+  expect(store.read("q", z.json(), 0)).toEqual(dirty);
+  expect(store.read("q", successfulSearch, 0)).toEqual(result);
 });
 
 test("disk cache rejects and removes incompatible legacy rows", () => {
@@ -53,8 +58,8 @@ test("disk cache rejects and removes incompatible legacy rows", () => {
   db.close();
 
   const store = openStore(path);
-  expect(store.read("old", 0)).toBeUndefined();
-  expect(store.read("broken", 0)).toBeUndefined();
+  expect(store.read("old", successfulSearch, 0)).toBeUndefined();
+  expect(store.read("broken", successfulSearch, 0)).toBeUndefined();
 
   const check = new Database(path, { create: true });
   expect(check.query("SELECT COUNT(*) AS count FROM cache").get()).toEqual({ count: 0 });

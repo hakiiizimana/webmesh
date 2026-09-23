@@ -144,7 +144,7 @@ describe("search fusion", () => {
     const fast = fake([item("https://fast.com/result")]);
     const result = await setup({ slow, fast }, { hedgeMs: 10, budgetMs: 20 }).search("cutoff test");
 
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       success: true,
       data: [item("https://fast.com/result")],
     });
@@ -161,6 +161,21 @@ describe("search fusion", () => {
       success: true,
       data: [item("https://working.com/result")],
     });
+  });
+
+  test("stops routing and reports cancellation when the caller gives up", async () => {
+    const slow: Provider = {
+      kind: "public",
+      search: (_query, { signal }) =>
+        new Promise((_resolve, reject) => signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true })),
+    };
+    const store = memoryStore();
+    const caller = new AbortController();
+    const pending = setup({ slow }, { store }).search("cancel test", { signal: caller.signal });
+    caller.abort();
+
+    expect(await pending).toEqual({ success: false, error: "Cancelled." });
+    expect(store.load().health).toEqual({});
   });
 
   test("returns success false when every provider fails", async () => {
@@ -217,7 +232,7 @@ describe("search fusion", () => {
     const p2 = fake([item("https://sqlite.org/lang"), item("https://sqlite.org.evil.com/phish")]);
     const result = await setup({ p1, p2 }).search("query", { filters: { includeDomains: ["sqlite.org"] } });
 
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       success: true,
       data: [item("https://docs.sqlite.org/wal"), item("https://sqlite.org/lang")],
     });
@@ -239,7 +254,7 @@ describe("search fusion", () => {
     const used = fake([item("https://used.com/item")]);
     const result = await setup({ skipped, used }).search("query", { filters: { language: "en" } });
 
-    expect(result).toEqual({ success: true, data: [item("https://used.com/item")] });
+    expect(result).toMatchObject({ success: true, data: [item("https://used.com/item")] });
     expect(skipped.calls).toHaveLength(0);
     expect(used.calls).toHaveLength(1);
   });
@@ -264,7 +279,7 @@ describe("search fusion", () => {
     const result = await setup({ provider }).search("query", { filters });
 
     expect(received).toEqual(filters);
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       success: true,
       data: [{ title: "Result", url: "https://example.com/result", description }],
     });
@@ -285,4 +300,19 @@ describe("search fusion", () => {
 
     expect(seen).toEqual({ scrape: "http://proxy:8000", public: undefined });
   });
+});
+
+test("keeps manual providers out of the default pool until a caller names them", async () => {
+  const live = fake([item("https://live.example/result")]);
+  const vertical = Object.assign(fake([item("https://vertical.example/result")]), { manual: true });
+  const { search } = setup({ live, vertical });
+
+  const automatic = await search("query");
+  expect(automatic.success).toBe(true);
+  if (automatic.success) expect(automatic.data.map((entry) => entry.url)).toEqual(["https://live.example/result"]);
+  expect(vertical.calls).toHaveLength(0);
+
+  const named = await search("query", { only: ["vertical"] });
+  expect(named.success).toBe(true);
+  if (named.success) expect(named.data.map((entry) => entry.url)).toEqual(["https://vertical.example/result"]);
 });

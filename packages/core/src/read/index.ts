@@ -1,6 +1,8 @@
 import { agentBrowserPath } from "../browser";
 import { blockedUrl, type ResolveAddresses } from "../network";
 import { createRouter, type RouterOptions, usesProxy } from "../router";
+import { type CacheStore, memoryCache } from "../state";
+import { cacheKey, cacheTtl, cachedFetch } from "./cache";
 import { fetchInBrowser } from "./providers/browser";
 import { fetchDirect } from "./providers/direct";
 import { fetchExaMcp } from "./providers/exa";
@@ -11,13 +13,18 @@ import { fetchParallelMcp } from "./providers/parallel";
 import { acceptsSocialUrl, fetchSocial } from "./providers/social";
 import { fetchTinyfish } from "./providers/tinyfish";
 import { fetchWayback } from "./providers/wayback";
+import { fetchZenRows } from "./providers/zenrows";
 import { defaultYtDlpPath } from "./providers/ytDlp";
 import type { Json } from "../http";
+import { mapLimit } from "../shared/concurrency";
 import type { FetchFormat, Fetcher, FetchResult, Page, PageFormat } from "./types";
 
 const BUDGET_MS = 30_000;
 const HEDGE_MS = 3_000;
+const ATTEMPT_MS = 10_000;
 const MAX_CHARACTERS = 50_000;
+const MAX_LINKS = 1_000;
+const BATCH_CONCURRENCY = 3;
 
 export { pageFromHtml } from "./providers/page";
 export { pageFromExa } from "./providers/exa";
@@ -26,6 +33,8 @@ export { pageFromJina } from "./providers/jina";
 export { pageFromMarkdownNew } from "./providers/markdownNew";
 export { pageFromParallel } from "./providers/parallel";
 export { pageFromTinyfish } from "./providers/tinyfish";
+export { pageFromZenRows } from "./providers/zenrows";
+export { fetchFormat, page } from "./types";
 export type { FetchFormat, FetchedPage, Fetcher, FetchContext, FetchResult, Page, PageFormat, PageMetadata } from "./types";
 
 export const fetchers = {
@@ -46,6 +55,7 @@ export const fetchers = {
   wayback: { kind: "public", manual: true, formats: ["markdown", "html"], fetch: fetchWayback },
   jina: { kind: "api", env: "JINA_API_KEY", formats: ["markdown", "html"], fetch: fetchJina },
   tinyfish: { kind: "api", env: "TINYFISH_API_KEY", formats: ["markdown", "html"], fetch: fetchTinyfish },
+  zenrows: { kind: "api", env: "ZENROWS_API_KEY", formats: ["markdown"], fetch: fetchZenRows },
   firecrawl: { kind: "api", env: "FIRECRAWL_API_KEY", formats: ["markdown", "html", "rawHtml", "links", "json"], fetch: fetchFirecrawl },
 } satisfies Record<string, Fetcher>;
 
@@ -53,13 +63,18 @@ export type FetcherId = keyof typeof fetchers;
 
 export const isFetcherId = (id: string): id is FetcherId => Object.hasOwn(fetchers, id);
 
+export const fetcherIds = Object.keys(fetchers).filter(isFetcherId);
+
 type FetchOptions<Id> = {
   format?: PageFormat;
   formats?: FetchFormat[];
   schema?: Json;
   maxCharacters?: number;
   only?: Id[];
+  signal?: AbortSignal;
 };
+
+export type FetchedOne = { url: string } & FetchResult;
 
 function primaryFormat(formats: readonly FetchFormat[]): PageFormat {
   return formats.includes("markdown") ? "markdown" : "html";
@@ -73,14 +88,21 @@ function contentHash(content: string): string {
 
 export function createFetch<R extends Record<string, Fetcher>>(
   registry: R,
-  options: RouterOptions & { proxy?: string; allowPrivateNetworks?: boolean; resolve?: ResolveAddresses },
+  options: RouterOptions & {
+    proxy?: string;
+    allowPrivateNetworks?: boolean;
+    allowPrivateHosts?: readonly string[];
+    resolve?: ResolveAddresses;
+    cache?: CacheStore;
+  },
 ) {
   type Id = keyof R & string;
-  const router = createRouter("fetch", registry, options, { budgetMs: BUDGET_MS, hedgeMs: HEDGE_MS });
+  const router = createRouter("fetch", registry, { ...options, attemptMs: ATTEMPT_MS }, { budgetMs: BUDGET_MS, hedgeMs: HEDGE_MS });
+  const cache = options.cache ?? memoryCache();
 
   async function fetchPage(
     url: string,
-    { format, formats: requestedFormats, schema, maxCharacters = MAX_CHARACTERS, only }: FetchOptions<Id> = {},
+    { format, formats: requestedFormats, schema, maxCharacters = MAX_CHARACTERS, only, signal }: FetchOptions<Id> = {},
   ): Promise<FetchResult> {
     const formats = requestedFormats ?? [format ?? "markdown"];
     if (formats.length === 0) return { success: false, error: "Pass at least one fetch format." };
@@ -93,7 +115,7 @@ export function createFetch<R extends Record<string, Fetcher>>(
     const protocol = URL.parse(url)?.protocol;
     if (protocol !== "https:" && protocol !== "http:") return { success: false, error: "Only http and https URLs can be fetched." };
     if (!options.allowPrivateNetworks) {
-      const error = await blockedUrl(url, options.resolve);
+      const error = await blockedUrl(url, options.resolve, options.allowPrivateHosts);
       if (error) return { success: false, error };
     }
     const configured = (only ?? router.ids.filter((id) => !router.get(id).manual)).filter(router.isReady);
@@ -110,6 +132,10 @@ export function createFetch<R extends Record<string, Fetcher>>(
 
     const primary = primaryFormat(formats);
 
+    const key = cacheKey(url, formats, schema, maxCharacters, only);
+    const cached = cache.read(key, cachedFetch, router.now());
+    if (cached) return cached;
+
     const result = await router.route(ready, {
       call: async (id, key, signal): Promise<Page> => {
         const proxy = usesProxy(router.get(id).kind) ? options.proxy : undefined;
@@ -122,14 +148,21 @@ export function createFetch<R extends Record<string, Fetcher>>(
           key,
           proxy,
           allowPrivateNetworks: options.allowPrivateNetworks,
+          allowPrivateHosts: options.allowPrivateHosts,
           resolve: options.resolve,
         });
         const content = page.content.trim();
+        // rawHtml and links go to the agent and the cache too, so they share the content's limit.
         return {
           ...page,
           format: primary,
           content: content.slice(0, maxCharacters),
-          truncated: content.length > maxCharacters,
+          rawHtml: page.rawHtml?.slice(0, maxCharacters),
+          links: page.links?.slice(0, MAX_LINKS),
+          truncated:
+            content.length > maxCharacters ||
+            (page.rawHtml?.length ?? 0) > maxCharacters ||
+            (page.links?.length ?? 0) > MAX_LINKS,
           metadata: {
             ...page.metadata,
             sourceURL: url,
@@ -149,9 +182,15 @@ export function createFetch<R extends Record<string, Fetcher>>(
           return page.content.length > 0;
         }),
       empty: formats.length === 1 && (formats[0] === "markdown" || formats[0] === "html") ? "empty page" : "missing requested page data",
-    });
-    return result.success ? { success: true, data: result.data } : result;
+    }, signal);
+    if (!result.success) return result;
+    cache.write(key, { success: true, data: result.data }, router.now() + cacheTtl());
+    return { success: true, data: result.data };
   }
 
-  return { fetch: fetchPage, status: router.status };
+  async function fetchMany(urls: readonly string[], options: FetchOptions<Id> = {}): Promise<FetchedOne[]> {
+    return mapLimit(urls, BATCH_CONCURRENCY, async (url) => ({ url, ...(await fetchPage(url, options)) }));
+  }
+
+  return { fetch: fetchPage, fetchMany, status: router.status };
 }

@@ -4,10 +4,14 @@ import { parseBrave, parseBraveWeb } from "../src/search/providers/brave";
 import { parseDuckduckgoHtml, parseDuckduckgoLite } from "../src/search/providers/duckduckgo";
 import { parseExa, parseExaMcp } from "../src/search/providers/exa";
 import { parseFirecrawl } from "../src/search/providers/firecrawl";
+import { parseHnAlgolia } from "../src/search/providers/hnAlgolia";
 import { parseKeenable } from "../src/search/providers/keenable";
 import { parseMarginalia } from "../src/search/providers/marginalia";
 import { parseMwmbl } from "../src/search/providers/mwmbl";
+import { parseOpenalex } from "../src/search/providers/openalex";
 import { parseParallel } from "../src/search/providers/parallel";
+import { parseSearchX } from "../src/search/providers/searchx";
+import { parseStackExchange } from "../src/search/providers/stackExchange";
 import { parseTavily } from "../src/search/providers/tavily";
 import { parseTinyfish } from "../src/search/providers/tinyfish";
 
@@ -203,24 +207,41 @@ test("assertRelevant flags bot check and CAPTCHA results as a soft block", () =>
   expect(() => assertRelevant(QUERY, blockItems)).toThrow(SoftBlockError);
 });
 
-test("tavily parses clean public items with published date", async () => {
-  const body = JSON.stringify({
-    results: [
-      {
-        title: "Tavily Rust Ownership",
-        url: "https://tavily.example/rust",
-        content: "Rust ownership guide content",
-        published_date: "2026-03-01T12:00:00Z",
-      },
-    ],
-  });
-  const items = await parseTavily(QUERY, body);
+test("parses a captured Tavily keyless response", async () => {
+  const items = await parseTavily(QUERY, await Bun.file(`${import.meta.dir}/fixtures/tavily-keyless.json`).text());
   expect(items).toEqual([
     {
-      title: "Tavily Rust Ownership",
-      url: "https://tavily.example/rust",
-      description: "Rust ownership guide content",
-      publishedAt: "2026-03-01",
+      title: "Understanding Ownership - The Rust Programming Language",
+      url: "https://doc.rust-lang.org/book/ch04-00-understanding-ownership.html",
+      description:
+        "Ownership is Rust’s most unique feature and has deep implications for the rest of the language. It enables Rust to make memory safety guarantees without needing a garbage collector, so it’s important to understand how ownership works. In this chapter, we’ll talk about ownership as well as several related features: borrowing, slices, and how Rust lays data out in memory.",
+      publishedAt: undefined,
+    },
+    {
+      title: "What is Ownership? - The Rust Programming Language",
+      url: "https://doc.rust-lang.org/book/ch04-01-what-is-ownership.html",
+      description:
+        "Ownership is a set of rules that govern how a Rust program manages memory. All programs have to manage the way they use a computer’s memory while running. Some languages have garbage collection that regularly looks for no-longer-used memory as the program runs; in other languages, the programmer must explicitly allocate and free the memory. Rust uses a third approach: Memory is managed through a system of ownership with a set of rules that the compiler checks. If any of the rules are violated, [...] Because ownership is a new concept for many programmers, it does take some time to get used to. The good news is that the more experienced you become with Rust and the rules of the ownership system, the easier you’ll find it to naturally develop code that is safe and efficient. Keep at it! [...] First, let’s take a look at the ownership rules. Keep these rules in mind as we work through the examples that illustrate them:\n\n Each value in Rust has an owner.\n There can only be one owner at a time.\n When the owner goes out of scope, the value will be dropped.\n\n### Variable Scope",
+      publishedAt: undefined,
+    },
+  ]);
+});
+
+test("parses a captured SearchX response", async () => {
+  const items = await parseSearchX(QUERY, await Bun.file(`${import.meta.dir}/fixtures/searchx.json`).text());
+  expect(items).toEqual([
+    {
+      title: "Rust Ownership Explained: The One Concept Every...",
+      url: "https://medium.com/@johirbuet/rust-ownership-explained-the-one-concept-every-beginner-struggles-with-eb16641f3944",
+      description:
+        "Ownership is the most important and most confusing concept in Rust, but also the one that makes Rust so powerful. In this post, we'll break it down using simple examples and real-life...",
+      publishedAt: undefined,
+    },
+    {
+      title: "cordx56/rustowl",
+      url: "https://github.com/cordx56/rustowl",
+      description: "Visualize Ownership and Lifetimes in Rust [Rust] 5210",
+      publishedAt: undefined,
     },
   ]);
 });
@@ -325,6 +346,111 @@ test("mwmbl parses clean public items by combining fragment values", async () =>
       title: "Mwmbl Rust Ownership",
       url: "https://mwmbl.example/rust",
       description: "Fragment one fragment two",
+      publishedAt: undefined,
+    },
+  ]);
+});
+
+const fixture = (name: string) => Bun.file(`${import.meta.dir}/fixtures/${name}`).text();
+
+test("parses a captured HN Algolia response", async () => {
+  const items = await parseHnAlgolia(QUERY, await fixture("hn-algolia.json"));
+  expect(items).toEqual([
+    {
+      title: "Rust Ownership Rules",
+      url: "https://www.geekabyte.io/2020/02/rust-ownership-rules.html",
+      description: "317 points · 170 comments · by dade",
+      publishedAt: "2020-03-02",
+    },
+    {
+      title: "Short intro to C++ for Rust developers: Ownership and Borrowing",
+      url: "http://nercury.github.io/c++/intro/2017/01/22/cpp-for-rust-devs.html",
+      description: "195 points · 97 comments · by ingve",
+      publishedAt: "2017-01-22",
+    },
+  ]);
+});
+
+// Ask HN stories are submitted without a url, so they have to link back to the thread.
+test("links an Ask HN story that carries no url to its thread", async () => {
+  const items = await parseHnAlgolia(QUERY, await fixture("hn-algolia-ask.json"));
+  expect(items).toEqual([
+    {
+      title: "Ask HN: Will Rust ever become a mainstream systems programming language?",
+      url: "https://news.ycombinator.com/item?id=14081178",
+      description: "82 points · 279 comments · by justinucd",
+      publishedAt: "2017-04-10",
+    },
+  ]);
+});
+
+test("parses a captured Stack Exchange response with body snippets", async () => {
+  const items = await parseStackExchange(QUERY, await fixture("stackexchange.json"));
+  expect(items.map((item) => ({ ...item, description: undefined }))).toEqual([
+    {
+      title: "Rust Ownership Smart Pointers",
+      url: "https://stackoverflow.com/questions/63764669/rust-ownership-smart-pointers",
+      description: undefined,
+      publishedAt: "2020-09-06",
+    },
+    {
+      title: "How to enable Rust Ownership paradigm in C++",
+      url: "https://stackoverflow.com/questions/30011603/how-to-enable-rust-ownership-paradigm-in-c",
+      description: undefined,
+      publishedAt: "2015-05-03",
+    },
+  ]);
+  expect(items[0]?.description).toBe(
+    'answered · 5 votes · 1 answer · rust — I\'ve recently started learning Rust and just learned about the Smart Pointers (Box, Rc and RefCell). In the guide they talked about Rc implementing "shared ownership". But if I understood it correctly, the whole point of the ownership system is that there can only be one owner. And to me (still a Rust newbie) it seems as if Rc and RefCell take ownership of they value they contain and just "expose"',
+  );
+  expect(items[1]?.description).toContain("answered · 44 votes · 4 answers · c++, rust, smart-pointers — ");
+});
+
+// The docs require a client that reads backoff to wait, so the parser fails and the router benches it.
+test("refuses a Stack Exchange response that asks for backoff", async () => {
+  const body = JSON.stringify({ items: [], backoff: 10 });
+  expect(() => parseStackExchange(QUERY, body)).toThrow("Stack Exchange asked for a 10s backoff");
+});
+
+test("parses a captured OpenAlex response and rebuilds the abstract", async () => {
+  const items = await parseOpenalex(QUERY, await fixture("openalex.json"));
+  expect(items.map((item) => ({ ...item, description: undefined }))).toEqual([
+    {
+      title: "Ownership Guided C to Rust Translation",
+      url: "https://doi.org/10.1007/978-3-031-37709-9_22",
+      description: undefined,
+      publishedAt: "2023-01-01",
+    },
+    {
+      title: "RustBelt: securing the foundations of the Rust programming language",
+      url: "https://doi.org/10.1145/3158154",
+      description: undefined,
+      publishedAt: "2017-12-27",
+    },
+  ]);
+  expect(items[0]?.description).toStartWith("Abstract Dubbed a safer C, Rust is a modern programming language");
+  expect(items[0]?.description).toContain("scales to real-world codebases");
+  expect(items[1]?.description).toStartWith("Rust is a new systems programming language");
+});
+
+// A work with no abstract still has to describe itself, so fall back to its citation count and venue.
+test("falls back to citations and venue when a work has no abstract", async () => {
+  const body = JSON.stringify({
+    results: [
+      {
+        id: "https://openalex.org/W1",
+        title: "A work without an abstract",
+        cited_by_count: 12,
+        primary_location: { source: { display_name: "Journal of Testing" } },
+      },
+    ],
+  });
+  const items = await parseOpenalex(QUERY, body);
+  expect(items).toEqual([
+    {
+      title: "A work without an abstract",
+      url: "https://openalex.org/W1",
+      description: "12 citations · Journal of Testing",
       publishedAt: undefined,
     },
   ]);

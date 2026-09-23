@@ -6,8 +6,8 @@ import { MIN_WORDS, assertPageStatus } from "./page";
 const openedPage = z.object({ title: z.string().optional(), url: z.string().optional() });
 const readPage = z.object({ content: z.string(), status: z.number().nullish() });
 
-export async function fetchInBrowser(url: string, { signal, proxy, allowPrivateNetworks }: FetchContext): Promise<FetchedPage> {
-  const browser = createBrowser(`webmesh-fetch-${crypto.randomUUID().slice(0, 8)}`, { proxy, allowPrivateNetworks });
+export async function fetchInBrowser(url: string, { signal, proxy, allowPrivateNetworks, allowPrivateHosts }: FetchContext): Promise<FetchedPage> {
+  const browser = createBrowser(`webmesh-fetch-${crypto.randomUUID().slice(0, 8)}`, { proxy, allowPrivateNetworks, allowPrivateHosts });
   try {
     const opened = await browser.run(["open", url], signal);
     if (!opened.success) throw new Error(opened.error);
