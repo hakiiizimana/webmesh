@@ -11,6 +11,7 @@ import { fetchParallelMcp } from "./providers/parallel";
 import { acceptsSocialUrl, fetchSocial } from "./providers/social";
 import { fetchTinyfish } from "./providers/tinyfish";
 import { fetchWayback } from "./providers/wayback";
+import { fetchZenRows } from "./providers/zenrows";
 import { defaultYtDlpPath } from "./providers/ytDlp";
 import type { Json } from "../http";
 import type { FetchFormat, Fetcher, FetchResult, Page, PageFormat } from "./types";
@@ -26,6 +27,7 @@ export { pageFromJina } from "./providers/jina";
 export { pageFromMarkdownNew } from "./providers/markdownNew";
 export { pageFromParallel } from "./providers/parallel";
 export { pageFromTinyfish } from "./providers/tinyfish";
+export { pageFromZenRows } from "./providers/zenrows";
 export type { FetchFormat, FetchedPage, Fetcher, FetchContext, FetchResult, Page, PageFormat, PageMetadata } from "./types";
 
 export const fetchers = {
@@ -46,6 +48,7 @@ export const fetchers = {
   wayback: { kind: "public", manual: true, formats: ["markdown", "html"], fetch: fetchWayback },
   jina: { kind: "api", env: "JINA_API_KEY", formats: ["markdown", "html"], fetch: fetchJina },
   tinyfish: { kind: "api", env: "TINYFISH_API_KEY", formats: ["markdown", "html"], fetch: fetchTinyfish },
+  zenrows: { kind: "api", env: "ZENROWS_API_KEY", formats: ["markdown"], fetch: fetchZenRows },
   firecrawl: { kind: "api", env: "FIRECRAWL_API_KEY", formats: ["markdown", "html", "rawHtml", "links", "json"], fetch: fetchFirecrawl },
 } satisfies Record<string, Fetcher>;
 

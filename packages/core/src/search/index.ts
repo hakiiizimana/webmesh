@@ -47,6 +47,7 @@ function bind(spec: ProviderSpec): Provider {
   return {
     kind: spec.kind,
     env: spec.kind === "api" ? spec.env : undefined,
+    manual: spec.manual,
     supports: spec.supports,
     search: (query, ctx) => invoke(spec, query, ctx),
   };
@@ -62,6 +63,8 @@ export const providers = {
   "marginalia-public": bind(specs["marginalia-public"]),
   "duckduckgo-lite": bind(specs["duckduckgo-lite"]),
   "firecrawl-free": bind(specs["firecrawl-free"]),
+  searchx: bind(specs.searchx),
+  "tavily-keyless": bind(specs["tavily-keyless"]),
   exa: bind(specs.exa),
   parallel: bind(specs.parallel),
   tavily: bind(specs.tavily),
@@ -71,6 +74,9 @@ export const providers = {
   firecrawl: bind(specs.firecrawl),
   marginalia: bind(specs.marginalia),
   tinyfish: bind(specs.tinyfish),
+  "hn-algolia": bind(specs["hn-algolia"]),
+  stackexchange: bind(specs.stackexchange),
+  openalex: bind(specs.openalex),
 } satisfies { [K in ProviderId]: Provider };
 
 type SearchOptions = RouterOptions & {
@@ -183,7 +189,7 @@ export function createSearch<R extends Record<string, Provider>>(registry: R, op
     { limit = 10, only, filters: requested = {} }: { limit?: number; only?: Id[]; filters?: SearchFilters } = {},
   ): Promise<SearchResult> {
     const filters = withoutDefaults(requested);
-    const configured = (only ?? router.ids).filter(router.isReady);
+    const configured = (only ?? router.ids.filter((id) => !router.get(id).manual)).filter(router.isReady);
     const ready = configured.filter((id) => router.get(id).supports?.(filters) ?? true);
     if (ready.length === 0) {
       return {
